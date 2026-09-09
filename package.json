@@ -1,0 +1,20 @@
+{
+  "name": "hafiz-general-store",
+  "version": "17.0.0",
+  "description": "Hafiz General Store - POS & Inventory Management System",
+  "private": true,
+  "scripts": {
+    "dev": "npx serve public",
+    "build": "echo 'Static site - no build needed'",
+    "start": "npx serve public"
+  },
+  "keywords": [
+    "pos",
+    "inventory",
+    "store",
+    "management",
+    "blogger"
+  ],
+  "author": "Khalil Ai Engineer",
+  "license": "MIT"
+}
