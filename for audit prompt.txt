@@ -1,0 +1,43 @@
+Before implementing any new features, perform a full project audit.
+
+Step 1:
+Review the complete index.html file and document all existing UI components, functions, event handlers, data models, and workflows.
+
+Step 2:
+Review the complete code.gs file and document all backend endpoints, validation logic, sheet operations, sync methods, ID generation methods, and Google Sheets setup functions.
+
+Step 3:
+Analyze the current Google Sheet structure and verify whether the automatic sheet setup system already creates all required sheets, headers, and configuration.
+
+Step 4:
+Produce a Gap Analysis report containing:
+
+* Existing Features
+* Missing Features
+* Bugs
+* Redundant Features
+* Performance Risks
+* Data Integrity Risks
+
+Step 5:
+Verify whether the current backend fully supports all proposed frontend requirements.
+
+For each proposed feature, explicitly state:
+
+* Supported by current backend
+* Requires backend modification
+* Requires Google Sheet modification
+* Requires both
+
+Step 6:
+Create a final implementation plan based only on findings from the audit.
+
+Do NOT implement anything yet.
+
+Present:
+
+1. Audit Report
+2. Compatibility Report
+3. Final Recommended Implementation Plan
+
+Wait for approval before making any code changes.

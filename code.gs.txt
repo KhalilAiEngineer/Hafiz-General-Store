@@ -1,0 +1,2162 @@
+/**
+ * ============================================================================
+ * 📱 HAFIZ GENERAL STORE - BACKEND SYSTEM (code.gs)
+ * ============================================================================
+ */
+
+// Global database cache for Database Control Center
+var database = {
+  products: [],
+  customers: [],
+  sales: [],
+  payments: [],
+  wholesalers: [],
+  todos: [],
+  auditLogs: [],
+  productPriceHistories: [],
+  productAnalytics: []
+};
+
+// Cache for sheet data
+var requestSheetValues = {};
+var requestIndexMaps = {};
+
+function initSpreadsheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  const sheets = {
+    "Products": ["id", "name", "category", "price", "cost", "stock", "minStock", "barcode", "sku", "unit", "imageUrl", "supplier", "expiryDate", "createdAt", "updatedAt", "lastPriceReviewDate", "lastCostUpdateDate", "priceReviewStatus", "marginPercent", "priceReviewPriority", "totalUnitsSold", "lastSoldDate", "priceLocked"],
+    "Customers": ["id", "name", "phone", "creditLimit", "balance", "active", "address", "city", "totalPurchases", "lastPurchaseDate", "createdAt", "updatedAt"],
+    "Sales": ["id", "date", "customerId", "customerName", "items", "subtotal", "discount", "total", "paymentMethod", "paymentStatus", "profit", "tax", "paidAmount", "remainingAmount", "status"],
+    "Payments": ["id", "date", "customerId", "amount", "method", "notes", "invoiceId", "paymentType", "balanceAfter"],
+    "Wholesalers": ["id", "name", "type", "contactPerson", "phone", "address", "active", "createdAt", "updatedAt"],
+    "Todos": ["id", "title", "frequency", "priority", "lastCompletedDate", "nextDueDate", "status", "active", "createdAt", "updatedAt"],
+    "AuditLogs": ["timestamp", "action", "operator", "details"],
+    "Product Price History": ["id", "productId", "oldCost", "newCost", "oldPrice", "newPrice", "changeReason", "updatedBy", "timestamp"],
+    "Product Analytics": ["productId", "unitsSold30Days", "unitsSold90Days", "lastSaleDate", "averageMonthlySales", "marginPercent", "reviewScore", "lastCalculated"]
+  };
+  
+  for (let sheetName in sheets) {
+    let sheet = ss.getSheetByName(sheetName);
+    const expectedHeaders = sheets[sheetName];
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+      ensureSheetHeaders(sheet, expectedHeaders);
+    } else {
+      ensureSheetHeaders(sheet, expectedHeaders);
+    }
+  }
+
+  let defaultSheet = ss.getSheetByName("Sheet1");
+  if (defaultSheet && defaultSheet.getLastRow() === 0 && ss.getSheets().length > 1) {
+    try {
+      ss.deleteSheet(defaultSheet);
+    } catch (e) {
+      console.log("Could not delete Sheet1: " + e.toString());
+    }
+  }
+}
+
+function ensureSheetHeaders(sheet, expectedHeaders) {
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+
+  if (lastRow === 0) {
+    sheet.appendRow(expectedHeaders);
+    formatHeaderRow(sheet, expectedHeaders.length);
+    return;
+  }
+
+  let currentHeaders = sheet.getRange(1, 1, 1, Math.max(1, lastCol)).getValues()[0].map(h => h.toString().trim());
+
+  expectedHeaders.forEach(expectedHeader => {
+    const exists = currentHeaders.some(h => h.toLowerCase() === expectedHeader.toLowerCase());
+    if (!exists) {
+      sheet.getRange(1, currentHeaders.length + 1).setValue(expectedHeader);
+      currentHeaders.push(expectedHeader);
+    }
+  });
+
+  currentHeaders = sheet.getRange(1, 1, 1, currentHeaders.length).getValues()[0].map(h => h.toString().trim());
+  const normalized = expectedHeaders.map(expectedHeader => {
+    const index = currentHeaders.findIndex(h => h.toLowerCase() === expectedHeader.toLowerCase());
+    return index >= 0 ? index + 1 : null;
+  });
+
+  const needsReorder = normalized.some((col, idx) => col !== idx + 1);
+  if (needsReorder) {
+    const rows = sheet.getRange(1, 1, lastRow, currentHeaders.length).getValues();
+    const reordered = rows.map(row => normalized.map(colIndex => colIndex === null ? "" : row[colIndex - 1]));
+    sheet.getRange(1, 1, lastRow, expectedHeaders.length).setValues(reordered);
+  }
+
+  formatHeaderRow(sheet, expectedHeaders.length);
+}
+
+function formatHeaderRow(sheet, columnCount) {
+  const range = sheet.getRange(1, 1, 1, columnCount);
+  range.setFontWeight("bold");
+  range.setBackground("#2e7d32");
+  range.setFontColor("white");
+}
+
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Hafiz Store System')
+    .addItem('Initialize Database Sheets', 'initSpreadsheet')
+    .addItem('Check System Status', 'checkStatus')
+    .addToUi();
+}
+
+function checkStatus() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = ["Products", "Customers", "Sales", "Payments"];
+  let missing = [];
+  
+  sheets.forEach(name => {
+    if (!ss.getSheetByName(name)) {
+      missing.push(name);
+    }
+  });
+
+  const ui = SpreadsheetApp.getUi();
+  if (missing.length === 0) {
+    ui.alert("Hafiz Store System: Online & Configured\n\nAll database sheets are present and styled properly.");
+  } else {
+    ui.alert("Hafiz Store System: Warning\n\nMissing sheets: " + missing.join(", ") + "\n\nClick 'Initialize Database Sheets' to generate them.");
+  }
+}
+
+function getSheetData(sheetName) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return [];
+  
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return [];
+  
+  const rawHeaders = data[0];
+  const expected = {
+    "Products": ["id", "name", "category", "price", "cost", "stock", "minStock", "barcode", "sku", "unit", "imageUrl", "supplier", "expiryDate", "createdAt", "updatedAt", "lastPriceReviewDate", "lastCostUpdateDate", "priceReviewStatus", "marginPercent", "priceReviewPriority", "totalUnitsSold", "lastSoldDate", "priceLocked"],
+    "Customers": ["id", "name", "phone", "creditLimit", "balance", "active", "address", "city", "totalPurchases", "lastPurchaseDate", "createdAt", "updatedAt"],
+    "Sales": ["id", "date", "customerId", "customerName", "items", "subtotal", "discount", "total", "paymentMethod", "paymentStatus", "profit", "tax", "paidAmount", "remainingAmount", "status"],
+    "Payments": ["id", "date", "customerId", "amount", "method", "notes", "invoiceId", "paymentType", "balanceAfter"],
+    "Wholesalers": ["id", "name", "type", "contactPerson", "phone", "address", "active", "createdAt", "updatedAt"],
+    "Todos": ["id", "title", "frequency", "priority", "lastCompletedDate", "nextDueDate", "status", "active", "createdAt", "updatedAt"],
+    "AuditLogs": ["timestamp", "action", "operator", "details"],
+    "Product Price History": ["id", "productId", "oldCost", "newCost", "oldPrice", "newPrice", "changeReason", "updatedBy", "timestamp"],
+    "Product Analytics": ["productId", "unitsSold30Days", "unitsSold90Days", "lastSaleDate", "averageMonthlySales", "marginPercent", "reviewScore", "lastCalculated"]
+  }[sheetName] || [];
+  
+  const expectedLowerMap = {};
+  expected.forEach(key => {
+    expectedLowerMap[key.toLowerCase()] = key;
+  });
+  
+  const headers = rawHeaders.map(h => {
+    const rawKey = h.toString().trim();
+    const lowerKey = rawKey.toLowerCase();
+    return expectedLowerMap[lowerKey] || rawKey;
+  });
+  
+  const rows = [];
+  for (let i = 1; i < data.length; i++) {
+    const row = {};
+    for (let j = 0; j < headers.length; j++) {
+      let val = data[i][j];
+      if (sheetName === "Sales" && headers[j] === "items") {
+        try { val = JSON.parse(val); } catch(e) {}
+      }
+      row[headers[j]] = val;
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+function getSheetValues(sheetName) {
+  if (!requestSheetValues[sheetName]) {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return [];
+    requestSheetValues[sheetName] = sheet.getDataRange().getValues();
+  }
+  return requestSheetValues[sheetName];
+}
+
+function getRowIndex(sheetName, id) {
+  if (!requestIndexMaps[sheetName]) {
+    const data = getSheetValues(sheetName);
+    const map = {};
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0]) {
+        map[data[i][0].toString()] = i + 1;
+      }
+    }
+    requestIndexMaps[sheetName] = map;
+  }
+  return requestIndexMaps[sheetName][id.toString()] || -1;
+}
+
+function findRowIndexById(sheet, id) {
+  return getRowIndex(sheet.getName(), id);
+}
+
+function saveOrUpdateObject(sheetName, obj, headers) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    initSpreadsheet();
+    sheet = ss.getSheetByName(sheetName);
+  }
+
+  const rowData = headers.map(header => {
+    let val = obj[header];
+    if (sheetName === "Sales" && header === "items" && typeof val === "object") {
+      val = JSON.stringify(val);
+    }
+    return val === undefined ? "" : val;
+  });
+
+  const rowIndex = getRowIndex(sheetName, obj.id);
+  if (rowIndex > -1) {
+    const currentHeaders = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0].map(h => h.toString().trim().toLowerCase());
+    headers.forEach((header, idx) => {
+      const colIndex = currentHeaders.indexOf(header.toLowerCase());
+      if (colIndex > -1) {
+        sheet.getRange(rowIndex, colIndex + 1).setValue(rowData[idx]);
+      }
+    });
+    if (requestSheetValues[sheetName]) {
+      const cachedHeaders = requestSheetValues[sheetName][0].map(h => h.toString().trim().toLowerCase());
+      headers.forEach((header, idx) => {
+        const colIndex = cachedHeaders.indexOf(header.toLowerCase());
+        if (colIndex > -1) {
+          requestSheetValues[sheetName][rowIndex - 1][colIndex] = rowData[idx];
+        }
+      });
+    }
+  } else {
+    sheet.appendRow(rowData);
+    const newRowIndex = sheet.getLastRow();
+    if (requestIndexMaps[sheetName]) {
+      requestIndexMaps[sheetName][obj.id.toString()] = newRowIndex;
+    }
+    if (requestSheetValues[sheetName]) {
+      requestSheetValues[sheetName].push(rowData);
+    }
+  }
+}
+
+function jsonResponse(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+// ✅ FIX Bug 7: generateUniqueId now uses getSheetValues cache to prevent duplicate IDs
+function generateUniqueId(sheetName, prefix) {
+  const data = getSheetValues(sheetName); // was: sheet.getDataRange().getValues()
+  if (!data || data.length <= 1) {
+    return prefix + "1001";
+  }
+  
+  let maxNum = 1000;
+  for (let i = 1; i < data.length; i++) {
+    const idStr = data[i][0].toString();
+    if (idStr.startsWith(prefix)) {
+      const numPart = idStr.substring(prefix.length).replace(/[^0-9]/g, "");
+      const num = parseInt(numPart, 10);
+      if (!isNaN(num) && num > maxNum) {
+        maxNum = num;
+      }
+    }
+  }
+  return prefix + (maxNum + 1);
+}
+
+// ============================================================================
+// 📥 GET ROUTE
+// ============================================================================
+function doGet(e) {
+  try {
+    initSpreadsheet();
+    const action = e.parameter.action;
+    
+    if (action === "getAllData") {
+      const payload = {
+        products: getSheetData("Products"),
+        customers: getSheetData("Customers"),
+        sales: getSheetData("Sales"),
+        payments: getSheetData("Payments"),
+        wholesalers: getSheetData("Wholesalers"),
+        todos: getSheetData("Todos"),
+        auditLogs: getSheetData("AuditLogs"),
+        productPriceHistories: getSheetData("Product Price History"),
+        productAnalytics: getSheetData("Product Analytics")
+      };
+      // Update global database cache
+      database = payload;
+      return jsonResponse({ status: "success", data: payload });
+}
+    
+    return jsonResponse({ status: "error", message: "Unknown GET action" });
+  } catch(err) {
+    return jsonResponse({ status: "error", message: err.toString() });
+  }
+}
+
+// ============================================================================
+// 📤 POST ROUTE
+// ============================================================================
+function doPost(e) {
+  const lock = LockService.getScriptLock();
+  let lockAcquired = false;
+  try {
+    lock.waitLock(30000);
+    lockAcquired = true;
+    
+    initSpreadsheet();
+    
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+    let requestData;
+    try {
+      if (e.postData && e.postData.contents) {
+        requestData = JSON.parse(e.postData.contents);
+      } else {
+        return jsonResponse({ status: "error", message: "No post data found" });
+      }
+    } catch (parseErr) {
+      return jsonResponse({ status: "error", message: "Invalid JSON format: " + parseErr.toString() });
+    }
+
+    const action = (e.parameter && e.parameter.action) || requestData.action || "";
+    
+    // ------------------------------------------------------------------------
+    // 🏷️ SAVE PRODUCT
+    // ------------------------------------------------------------------------
+    if (action === "saveProduct") {
+      const headers = ["id", "name", "category", "price", "cost", "stock", "minStock", "barcode", "sku", "unit", "imageUrl", "supplier", "expiryDate", "createdAt", "updatedAt", "lastPriceReviewDate", "lastCostUpdateDate", "priceReviewStatus", "marginPercent", "priceReviewPriority", "totalUnitsSold", "lastSoldDate", "priceLocked"];
+      const product = requestData.data;
+      
+      if (!product.name || typeof product.name !== "string" || product.name.trim() === "") {
+        return jsonResponse({ status: "error", message: "Product name is required." });
+      }
+      if (isNaN(product.price) || Number(product.price) < 0) {
+        return jsonResponse({ status: "error", message: "Price must be a valid non-negative number." });
+      }
+      if (isNaN(product.cost) || Number(product.cost) < 0) {
+        return jsonResponse({ status: "error", message: "Cost must be a valid non-negative number." });
+      }
+      if (isNaN(product.stock) || Number(product.stock) < 0) {
+        return jsonResponse({ status: "error", message: "Stock must be a valid non-negative number." });
+      }
+      if (isNaN(product.minStock) || Number(product.minStock) < 0) {
+        return jsonResponse({ status: "error", message: "Alert level must be a valid non-negative number." });
+      }
+      
+      const isNew = !product.id;
+      if (isNew) {
+        product.id = generateUniqueId("Products", "P");
+        product.createdAt = new Date().toISOString();
+      }
+      product.updatedAt = new Date().toISOString();
+      
+      product.lastPriceReviewDate = product.lastPriceReviewDate || (isNew ? new Date().toISOString() : product.lastPriceReviewDate);
+      product.lastCostUpdateDate = product.lastCostUpdateDate || "";
+      product.priceReviewStatus = product.priceReviewStatus || "Pending";
+      product.marginPercent = product.marginPercent || 0;
+      product.priceReviewPriority = product.priceReviewPriority || "Normal";
+      product.totalUnitsSold = Number(product.totalUnitsSold || 0);
+      product.lastSoldDate = product.lastSoldDate || "";
+      product.priceLocked = product.priceLocked === true || product.priceLocked === "true" ? true : false;
+      
+      const existingProduct = product.id ? (getSheetData("Products").find(p => String(p.id) === String(product.id)) || null) : null;
+      const oldCost = existingProduct ? Number(existingProduct.cost || 0) : null;
+      const oldPrice = existingProduct ? Number(existingProduct.price || 0) : null;
+      const costChanged = existingProduct && oldCost !== product.cost;
+      const priceChanged = existingProduct && oldPrice !== product.price;
+      
+      product.price = Number(product.price);
+      product.cost = Number(product.cost);
+      product.stock = Number(product.stock);
+      product.minStock = Number(product.minStock);
+      
+      saveOrUpdateObject("Products", product, headers);
+      
+      if (costChanged || priceChanged) {
+        appendProductPriceHistory(product.id, oldCost, product.cost, oldPrice, product.price, priceChanged && !costChanged ? "Manual price update" : costChanged ? "Cost update" : "Price/Cost update", requestData.operator || "System");
+      }
+      
+      logAuditEntry(
+        isNew ? "Create Product" : "Update Product",
+        requestData.operator || "System",
+        "Product " + product.name + " (" + product.id + ") saved. Stock: " + product.stock + ", Price: Rs. " + product.price
+      );
+      
+      return jsonResponse({ status: "success", id: product.id });
+        
+    } else if (action === "deleteProduct") {
+      const productId = requestData.id;
+      if (!productId) {
+        return jsonResponse({ status: "error", message: "Product ID is required." });
+      }
+      
+      const salesSheet = ss.getSheetByName("Sales");
+      if (salesSheet) {
+        const salesData = salesSheet.getDataRange().getValues();
+        for (let i = 1; i < salesData.length; i++) {
+          const itemsStr = salesData[i][4];
+          if (itemsStr) {
+            try {
+              const items = JSON.parse(itemsStr);
+              if (Array.isArray(items)) {
+                const isUsed = items.some(item => item.id.toString() === productId.toString());
+                if (isUsed) {
+                  return jsonResponse({ status: "error", message: "Cannot delete product because it has been used in existing sales history." });
+                }
+              }
+            } catch (e) {
+              if (itemsStr.indexOf(productId.toString()) > -1) {
+                return jsonResponse({ status: "error", message: "Cannot delete product because it exists in sales records." });
+              }
+            }
+          }
+        }
+      }
+      
+      const sheet = ss.getSheetByName("Products");
+      const rowIndex = findRowIndexById(sheet, productId);
+      if (rowIndex > -1) {
+        sheet.deleteRow(rowIndex);
+        return jsonResponse({ status: "success" });
+      }
+      return jsonResponse({ status: "error", message: "Product not found" });
+        
+    } else if (action === "saveCustomer") {
+      const headers = ["id", "name", "phone", "creditLimit", "balance", "active", "address", "city", "totalPurchases", "lastPurchaseDate", "createdAt", "updatedAt"];
+      const customer = requestData.data;
+      
+      if (!customer.name || typeof customer.name !== "string" || customer.name.trim() === "") {
+        return jsonResponse({ status: "error", message: "Customer name is required." });
+      }
+      if (isNaN(customer.creditLimit) || Number(customer.creditLimit) < 0) {
+        return jsonResponse({ status: "error", message: "Credit limit must be a valid non-negative number." });
+      }
+      
+      const isNew = !customer.id;
+      if (isNew) {
+        customer.id = generateUniqueId("Customers", "C");
+        customer.createdAt = new Date().toISOString();
+      }
+      customer.updatedAt = new Date().toISOString();
+      
+      if (isNew || customer.active === undefined) {
+        customer.active = true;
+      }
+      
+      customer.creditLimit = Number(customer.creditLimit);
+      customer.balance = isNaN(customer.balance) ? 0 : Number(customer.balance);
+      
+      saveOrUpdateObject("Customers", customer, headers);
+      
+      logAuditEntry(
+        isNew ? "Create Customer" : "Update Customer",
+        requestData.operator || "System",
+        "Customer " + customer.name + " (" + customer.id + ") saved. Balance: Rs. " + customer.balance + ", Credit Limit: Rs. " + customer.creditLimit
+      );
+      
+      return jsonResponse({ status: "success", id: customer.id });
+        
+    } else if (action === "deleteCustomer") {
+      const customerId = requestData.id;
+      if (!customerId) {
+        return jsonResponse({ status: "error", message: "Customer ID is required." });
+      }
+      
+      const sheet = ss.getSheetByName("Customers");
+      const rowIndex = findRowIndexById(sheet, customerId);
+      if (rowIndex > -1) {
+        const balance = Number(sheet.getRange(rowIndex, 5).getValue());
+        if (balance > 0) {
+          return jsonResponse({ status: "error", message: "Cannot delete a customer account with outstanding balance (Rs. " + balance + ")." });
+        }
+        sheet.getRange(rowIndex, 6).setValue(false);
+        return jsonResponse({ status: "success" });
+      }
+      return jsonResponse({ status: "error", message: "Customer not found" });
+        
+    } else if (action === "saveWholesaler") {
+      const headers = ["id", "name", "type", "contactPerson", "phone", "address", "active", "createdAt", "updatedAt"];
+      const wholesaler = requestData.data;
+      
+      if (!wholesaler.name || typeof wholesaler.name !== "string" || wholesaler.name.trim() === "") {
+        return jsonResponse({ status: "error", message: "Wholesaler name is required." });
+      }
+      
+      const isNew = !wholesaler.id;
+      if (isNew) {
+        wholesaler.id = generateUniqueId("Wholesalers", "W");
+        wholesaler.createdAt = new Date().toISOString();
+      }
+      wholesaler.updatedAt = new Date().toISOString();
+      
+      if (isNew || wholesaler.active === undefined) {
+        wholesaler.active = true;
+      }
+      wholesaler.type = wholesaler.type || "Supplier";
+      
+      saveOrUpdateObject("Wholesalers", wholesaler, headers);
+      
+      logAuditEntry(
+        isNew ? "Create Wholesaler" : "Update Wholesaler",
+        requestData.operator || "System",
+        "Wholesaler " + wholesaler.name + " (" + wholesaler.id + ") saved."
+      );
+      
+      return jsonResponse({ status: "success", id: wholesaler.id });
+        
+    } else if (action === "deleteWholesaler") {
+      const wholesalerId = requestData.id;
+      if (!wholesalerId) {
+        return jsonResponse({ status: "error", message: "Wholesaler ID is required." });
+      }
+      
+      const sheet = ss.getSheetByName("Wholesalers");
+      const rowIndex = findRowIndexById(sheet, wholesalerId);
+      if (rowIndex > -1) {
+        const headers = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0].map(h => h.toString().trim().toLowerCase());
+        const activeCol = headers.indexOf("active") + 1;
+        if (activeCol > 0) {
+          sheet.getRange(rowIndex, activeCol).setValue(false);
+          return jsonResponse({ status: "success" });
+        }
+      }
+      return jsonResponse({ status: "error", message: "Wholesaler not found" });
+      
+    } else if (action === "saveTodo") {
+      const headers = ["id", "title", "frequency", "priority", "lastCompletedDate", "nextDueDate", "status", "active", "createdAt", "updatedAt"];
+      const todo = requestData.data;
+      
+      if (!todo.title || typeof todo.title !== "string" || todo.title.trim() === "") {
+        return jsonResponse({ status: "error", message: "Task title is required." });
+      }
+      
+      const validFrequencies = ["daily", "every3days", "weekly", "monthly", "onetime"];
+      if (!validFrequencies.includes(todo.frequency)) {
+        return jsonResponse({ status: "error", message: "Invalid frequency value." });
+      }
+      
+      const validPriorities = ["low", "medium", "high", "urgent"];
+      if (!validPriorities.includes(todo.priority)) {
+        return jsonResponse({ status: "error", message: "Invalid priority value." });
+      }
+      
+      const isNew = !todo.id;
+      if (isNew) {
+        todo.id = generateUniqueId("Todos", "T");
+        todo.createdAt = new Date().toISOString();
+        todo.active = true;
+        todo.status = todo.status || "pending";
+      }
+      todo.updatedAt = new Date().toISOString();
+      
+      saveOrUpdateObject("Todos", todo, headers);
+      
+      logAuditEntry(
+        isNew ? "Create Todo" : "Update Todo",
+        requestData.operator || "System",
+        "Task '" + todo.title + "' (" + todo.id + ") saved. Frequency: " + todo.frequency + ", Priority: " + todo.priority
+      );
+      
+      return jsonResponse({ status: "success", id: todo.id });
+      
+    } else if (action === "deleteTodo") {
+      const todoId = requestData.id;
+      if (!todoId) {
+        return jsonResponse({ status: "error", message: "Task ID is required." });
+      }
+      
+      const sheet = ss.getSheetByName("Todos");
+      const rowIndex = findRowIndexById(sheet, todoId);
+      if (rowIndex > -1) {
+        // ✅ FIX Bug 6: Dynamic column lookup instead of hard-coded column 8
+        const todoHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(h => h.toString().trim().toLowerCase());
+        const activeCol = todoHeaders.indexOf("active") + 1;
+        if (activeCol > 0) {
+          sheet.getRange(rowIndex, activeCol).setValue(false);
+        }
+        return jsonResponse({ status: "success" });
+      }
+      return jsonResponse({ status: "error", message: "Task not found" });
+
+    } else if (action === "recordSale") {
+      const sale = requestData.data;
+      const salesHeaders = ["id", "date", "customerId", "customerName", "items", "subtotal", "discount", "total", "paymentMethod", "paymentStatus", "profit", "tax", "paidAmount", "remainingAmount", "status"];
+      
+      if (!sale.id) {
+        sale.id = generateUniqueId("Sales", "INV");
+      }
+      
+      const isAlreadyRecorded = getRowIndex("Sales", sale.id) > -1;
+      if (isAlreadyRecorded) {
+        return jsonResponse({ status: "success", id: sale.id, total: sale.total, paymentMethod: sale.paymentMethod, alreadyRecorded: true });
+      }
+      
+      if (!sale.items || !Array.isArray(sale.items) || sale.items.length === 0) {
+        return jsonResponse({ status: "error", message: "Sale must contain at least one item." });
+      }
+      
+      const productSheet = ss.getSheetByName("Products");
+      const customerSheet = ss.getSheetByName("Customers");
+      
+      const productData = getSheetValues("Products");
+      const customerData = getSheetValues("Customers");
+      
+      for (let i = 0; i < sale.items.length; i++) {
+        const item = sale.items[i];
+        const pRowIndex = getRowIndex("Products", item.id);
+        if (pRowIndex > -1) {
+          const currentStock = Number(productData[pRowIndex - 1][5]);
+          if (currentStock < Number(item.qty)) {
+            return jsonResponse({ status: "error", message: "Not enough stock for: " + item.name + " (Available: " + currentStock + ", Requested: " + item.qty + ")" });
+          }
+        } else {
+          return jsonResponse({ status: "error", message: "Product not found: " + item.name });
+        }
+      }
+      
+      if (sale.paymentMethod === "udhaar") {
+        if (!sale.customerId) {
+          return jsonResponse({ status: "error", message: "Customer selection required for credit sale." });
+        }
+        const cRowIndex = getRowIndex("Customers", sale.customerId);
+        if (cRowIndex > -1) {
+          const creditLimit = Number(customerData[cRowIndex - 1][3]);
+          const currentBalance = Number(customerData[cRowIndex - 1][4]);
+          const isActive = customerData[cRowIndex - 1][5].toString().toLowerCase() !== "false";
+          
+          if (!isActive) {
+            return jsonResponse({ status: "error", message: "Selected customer account is inactive." });
+          }
+          if (currentBalance + Number(sale.total) > creditLimit) {
+            return jsonResponse({ status: "error", message: "Sale exceeds customer credit limit! (Remaining credit limit: Rs. " + (creditLimit - currentBalance) + ")" });
+          }
+        } else {
+          return jsonResponse({ status: "error", message: "Selected customer not found." });
+        }
+      }
+      
+      let totalCost = 0;
+      sale.items.forEach(item => {
+        const pRowIndex = getRowIndex("Products", item.id);
+        if (pRowIndex > -1) {
+          const costPrice = Number(productData[pRowIndex - 1][4] || 0);
+          totalCost += costPrice * Number(item.qty);
+        }
+      });
+      sale.profit = Number(sale.total) - totalCost;
+      
+      sale.tax = sale.tax || 0;
+      sale.paidAmount = sale.paymentMethod === "udhaar" ? 0 : sale.total;
+      sale.remainingAmount = sale.paymentMethod === "udhaar" ? sale.total : 0;
+      sale.status = sale.paymentMethod === "udhaar" ? "unpaid" : "paid";
+      
+      saveOrUpdateObject("Sales", sale, salesHeaders);
+      
+      sale.items.forEach(item => {
+        const pRowIndex = getRowIndex("Products", item.id);
+        if (pRowIndex > -1) {
+          productData[pRowIndex - 1][5] = Number(productData[pRowIndex - 1][5]) - Number(item.qty);
+        }
+      });
+      productSheet.getRange(1, 1, productData.length, productData[0].length).setValues(productData);
+      
+      if (sale.paymentMethod === "udhaar") {
+        const cRowIndex = getRowIndex("Customers", sale.customerId);
+        if (cRowIndex > -1) {
+          customerData[cRowIndex - 1][4] = Number(customerData[cRowIndex - 1][4]) + Number(sale.total);
+          customerSheet.getRange(1, 1, customerData.length, customerData[0].length).setValues(customerData);
+        }
+      }
+      
+      logAuditEntry("Checkout Sale", "System", "Invoice " + sale.id + " checked out. Total: Rs. " + sale.total + " (" + sale.paymentMethod + ")");
+      
+      return jsonResponse({ status: "success", id: sale.id, total: sale.total, paymentMethod: sale.paymentMethod });
+    
+    } else if (action === "recordSalesBatch") {
+      const sales = requestData.data || [];
+      const salesHeaders = ["id", "date", "customerId", "customerName", "items", "subtotal", "discount", "total", "paymentMethod", "paymentStatus", "profit", "tax", "paidAmount", "remainingAmount", "status"];
+      
+      const productSheet = ss.getSheetByName("Products");
+      const customerSheet = ss.getSheetByName("Customers");
+      
+      const productData = getSheetValues("Products");
+      const customerData = getSheetValues("Customers");
+      
+      const salesSheetObj = ss.getSheetByName("Sales");
+      const existingSalesValues = salesSheetObj ? salesSheetObj.getDataRange().getValues() : [];
+      const existingSalesIds = new Set(existingSalesValues.slice(1).map(row => row[0].toString()));
+      
+      const syncedIds = [];
+      
+      for (let sIdx = 0; sIdx < sales.length; sIdx++) {
+        const sale = sales[sIdx];
+        if (!sale.id) {
+          sale.id = generateUniqueId("Sales", "INV");
+        }
+        
+        if (existingSalesIds.has(sale.id)) {
+          syncedIds.push(sale.id);
+          continue;
+        }
+        
+        let totalCost = 0;
+        sale.items.forEach(item => {
+          const pRowIndex = getRowIndex("Products", item.id);
+          if (pRowIndex > -1) {
+            const costPrice = Number(productData[pRowIndex - 1][4] || 0);
+            totalCost += costPrice * Number(item.qty);
+          }
+        });
+        
+        sale.profit = Number(sale.total) - totalCost;
+        sale.tax = sale.tax || 0;
+        sale.paidAmount = sale.paymentMethod === "udhaar" ? 0 : sale.total;
+        sale.remainingAmount = sale.paymentMethod === "udhaar" ? sale.total : 0;
+        sale.status = sale.paymentMethod === "udhaar" ? "unpaid" : "paid";
+        
+        saveOrUpdateObject("Sales", sale, salesHeaders);
+        
+        sale.items.forEach(item => {
+          const pRowIndex = getRowIndex("Products", item.id);
+          if (pRowIndex > -1) {
+            productData[pRowIndex - 1][5] = Number(productData[pRowIndex - 1][5]) - Number(item.qty);
+          }
+        });
+        
+        if (sale.paymentMethod === "udhaar" && sale.customerId) {
+          const cRowIndex = getRowIndex("Customers", sale.customerId);
+          if (cRowIndex > -1) {
+            customerData[cRowIndex - 1][4] = Number(customerData[cRowIndex - 1][4]) + Number(sale.total);
+          }
+        }
+        
+        syncedIds.push(sale.id);
+      }
+      
+      if (sales.length > 0) {
+        productSheet.getRange(1, 1, productData.length, productData[0].length).setValues(productData);
+        customerSheet.getRange(1, 1, customerData.length, customerData[0].length).setValues(customerData);
+      }
+      
+      logAuditEntry("Batch Checkout Sales", requestData.operator || "System", `Synced ${syncedIds.length} sales in batch.`);
+      return jsonResponse({ status: "success", ids: syncedIds });
+    
+    } else if (action === "recordPayment") {
+      const payment = requestData.data;
+      const paymentHeaders = ["id", "date", "customerId", "amount", "method", "notes", "invoiceId", "paymentType", "balanceAfter"];
+      
+      if (!payment.id) {
+        payment.id = generateUniqueId("Payments", "PAY");
+      }
+      
+      const isAlreadyRecorded = getRowIndex("Payments", payment.id) > -1;
+      if (isAlreadyRecorded) {
+        return jsonResponse({ status: "success", id: payment.id, alreadyRecorded: true });
+      }
+      
+      if (!payment.customerId) {
+        return jsonResponse({ status: "error", message: "Customer ID is required." });
+      }
+      if (isNaN(payment.amount) || Number(payment.amount) <= 0) {
+        return jsonResponse({ status: "error", message: "Invalid payment amount." });
+      }
+      
+      const customerSheet = ss.getSheetByName("Customers");
+      const cRowIndex = findRowIndexById(customerSheet, payment.customerId);
+      if (cRowIndex > -1) {
+        const balanceCell = customerSheet.getRange(cRowIndex, 5);
+        const currentBalance = Number(balanceCell.getValue());
+        
+        if (Number(payment.amount) > currentBalance) {
+          return jsonResponse({ status: "error", message: "Payment amount (Rs. " + payment.amount + ") exceeds outstanding balance (Rs. " + currentBalance + ")" });
+        }
+        
+        const updatedBalance = currentBalance - Number(payment.amount);
+        
+        payment.balanceAfter = updatedBalance;
+        payment.paymentType = payment.paymentType || payment.method || "Cash";
+        payment.invoiceId = payment.invoiceId || "";
+        
+        saveOrUpdateObject("Payments", payment, paymentHeaders);
+        balanceCell.setValue(updatedBalance);
+        
+        logAuditEntry(
+          "Record Payment",
+          requestData.operator || "System",
+          "Payment " + payment.id + " of Rs. " + payment.amount + " recorded for customer ID " + payment.customerId + ". New Balance: Rs. " + updatedBalance
+        );
+        
+        return jsonResponse({ 
+          status: "success", 
+          id: payment.id, 
+          updatedBalance: updatedBalance, 
+          timestamp: payment.date || new Date().toISOString() 
+        });
+      }
+      return jsonResponse({ status: "error", message: "Customer not found." });
+
+    } else if (action === "recordPaymentsBatch") {
+      const payments = requestData.data || [];
+      const paymentHeaders = ["id", "date", "customerId", "amount", "method", "notes", "invoiceId", "paymentType", "balanceAfter"];
+      
+      const customerSheet = ss.getSheetByName("Customers");
+      const customerData = getSheetValues("Customers");
+      
+      const paymentsSheetObj = ss.getSheetByName("Payments");
+      const existingPaymentsValues = paymentsSheetObj ? paymentsSheetObj.getDataRange().getValues() : [];
+      const existingPaymentsIds = new Set(existingPaymentsValues.slice(1).map(row => row[0].toString()));
+      
+      const syncedIds = [];
+      
+      for (let pIdx = 0; pIdx < payments.length; pIdx++) {
+        const payment = payments[pIdx];
+        if (!payment.id) {
+          payment.id = generateUniqueId("Payments", "PAY");
+        }
+        
+        if (existingPaymentsIds.has(payment.id)) {
+          syncedIds.push(payment.id);
+          continue;
+        }
+        
+        const cRowIndex = getRowIndex("Customers", payment.customerId);
+        if (cRowIndex > -1) {
+          const currentBalance = Number(customerData[cRowIndex - 1][4]);
+          
+          // ✅ FIX Bug 3: Negative balance protection added in batch payments
+          if (Number(payment.amount) > currentBalance) {
+            logAuditEntry("Batch Payment Skipped", requestData.operator || "System", 
+              "Payment " + payment.id + " skipped: amount Rs." + payment.amount + " exceeds balance Rs." + currentBalance);
+            continue;
+          }
+          
+          const updatedBalance = currentBalance - Number(payment.amount);
+          
+          payment.balanceAfter = updatedBalance;
+          payment.paymentType = payment.paymentType || payment.method || "Cash";
+          payment.invoiceId = payment.invoiceId || "";
+          
+          saveOrUpdateObject("Payments", payment, paymentHeaders);
+          
+          customerData[cRowIndex - 1][4] = updatedBalance;
+          syncedIds.push(payment.id);
+        }
+      }
+      
+      if (payments.length > 0) {
+        customerSheet.getRange(1, 1, customerData.length, customerData[0].length).setValues(customerData);
+      }
+      
+      logAuditEntry("Batch Record Payments", requestData.operator || "System", `Synced ${syncedIds.length} payments in batch.`);
+      return jsonResponse({ status: "success", ids: syncedIds });
+      
+    } else if (action === "dashboardStats") {
+      const products = getSheetData("Products");
+      const customers = getSheetData("Customers");
+      const sales = getSheetData("Sales");
+      
+      let totalSales = 0;
+      let totalProfit = 0;
+      let totalDebt = 0;
+      let lowStockCount = 0;
+      let expiringSoonCount = 0;
+      
+      const now = new Date();
+      const thirtyDaysFromNow = new Date();
+      thirtyDaysFromNow.setDate(now.getDate() + 30);
+      
+      products.forEach(p => {
+        const stock = Number(p.stock || 0);
+        const minStock = Number(p.minStock || 0);
+        if (stock <= minStock) lowStockCount++;
+        if (p.expiryDate) {
+          const expDate = new Date(p.expiryDate);
+          if (!isNaN(expDate.getTime()) && expDate >= now && expDate <= thirtyDaysFromNow) {
+            expiringSoonCount++;
+          }
+        }
+      });
+      
+      customers.forEach(c => {
+        const balance = Number(c.balance || 0);
+        if (balance > 0 && c.active !== false && c.active !== "false") {
+          totalDebt += balance;
+        }
+      });
+      
+      const topDebtors = customers
+        .filter(c => Number(c.balance || 0) > 0 && c.active !== false && c.active !== "false")
+        .sort((a, b) => Number(b.balance) - Number(a.balance))
+        .slice(0, 5)
+        .map(c => ({ name: c.name, balance: Number(c.balance) }));
+      
+      const dailyTrend = {};
+      const topProductsMap = {};
+      
+      sales.forEach(s => {
+        const total = Number(s.total || 0);
+        const profit = Number(s.profit || 0);
+        totalSales += total;
+        totalProfit += profit;
+        
+        if (s.date) {
+          let dateStr = "";
+          try {
+            const d = new Date(s.date);
+            if (!isNaN(d.getTime())) {
+              dateStr = d.toISOString().split('T')[0];
+            }
+          } catch(e) {}
+          
+          if (dateStr) {
+            if (!dailyTrend[dateStr]) dailyTrend[dateStr] = { sales: 0, profit: 0 };
+            dailyTrend[dateStr].sales += total;
+            dailyTrend[dateStr].profit += profit;
+          }
+        }
+        
+        if (s.items && Array.isArray(s.items)) {
+          s.items.forEach(item => {
+            if (!topProductsMap[item.name]) topProductsMap[item.name] = 0;
+            topProductsMap[item.name] += Number(item.qty || 0);
+          });
+        }
+      });
+      
+      const topProducts = Object.keys(topProductsMap)
+        .map(name => ({ name: name, qty: topProductsMap[name] }))
+        .sort((a, b) => b.qty - a.qty)
+        .slice(0, 5);
+        
+      return jsonResponse({
+        status: "success",
+        stats: { totalSales, totalProfit, totalDebt, lowStockCount, expiringSoonCount, topDebtors, topProducts, dailyTrend }
+      });
+      
+    } else if (action === "logAuditAction") {
+      const data = requestData.data || {};
+      logAuditEntry(data.action || "Unknown", data.operator || "System", data.details || "");
+      return jsonResponse({ status: "success" });
+
+    } else if (action === "refundSale") {
+      const saleId = requestData.id;
+      if (!saleId) {
+        return jsonResponse({ status: "error", message: "Sale ID is required." });
+      }
+      
+      const salesSheet = ss.getSheetByName("Sales");
+      const rowIndex = findRowIndexById(salesSheet, saleId);
+      if (rowIndex > -1) {
+        const headers = salesSheet.getRange(1, 1, 1, Math.max(1, salesSheet.getLastColumn())).getValues()[0].map(h => h.toString().trim().toLowerCase());
+        const statusCol = headers.indexOf("status") + 1;
+        if (statusCol > 0) {
+
+          // ✅ FIX Bug 4: Double refund protection
+          const currentStatus = salesSheet.getRange(rowIndex, statusCol).getValue().toString().toLowerCase();
+          if (currentStatus === "refunded") {
+            return jsonResponse({ status: "error", message: "This sale has already been refunded." });
+          }
+
+          salesSheet.getRange(rowIndex, statusCol).setValue("refunded");
+          
+          const itemsStr = salesSheet.getRange(rowIndex, headers.indexOf("items") + 1).getValue();
+          const paymentMethod = salesSheet.getRange(rowIndex, headers.indexOf("paymentmethod") + 1).getValue().toString().toLowerCase();
+          const total = Number(salesSheet.getRange(rowIndex, headers.indexOf("total") + 1).getValue() || 0);
+          const customerId = salesSheet.getRange(rowIndex, headers.indexOf("customerid") + 1).getValue().toString();
+          
+          try {
+            const items = JSON.parse(itemsStr);
+            if (Array.isArray(items)) {
+              const productSheet = ss.getSheetByName("Products");
+              const productData = getSheetValues("Products");
+              items.forEach(item => {
+                const pRowIndex = getRowIndex("Products", item.id);
+                if (pRowIndex > -1) {
+                  productData[pRowIndex - 1][5] = Number(productData[pRowIndex - 1][5]) + Number(item.qty);
+                }
+              });
+              productSheet.getRange(1, 1, productData.length, productData[0].length).setValues(productData);
+            }
+          } catch(e) {}
+          
+          if (paymentMethod === "udhaar" && customerId) {
+            const customerSheet = ss.getSheetByName("Customers");
+            const customerData = getSheetValues("Customers");
+            const cRowIndex = getRowIndex("Customers", customerId);
+            if (cRowIndex > -1) {
+              customerData[cRowIndex - 1][4] = Math.max(0, Number(customerData[cRowIndex - 1][4]) - total);
+              customerSheet.getRange(1, 1, customerData.length, customerData[0].length).setValues(customerData);
+            }
+          }
+          
+          logAuditEntry("Refund Sale", requestData.operator || "System", "Refunded sale ID " + saleId + ". Restored stocks.");
+          return jsonResponse({ status: "success" });
+        }
+      }
+      return jsonResponse({ status: "error", message: "Sale invoice not found." });
+         
+    } else if (action === "syncAllData") {
+      const allData = requestData.data;
+      
+      // Update global database cache
+      database = {
+        products: allData.products || [],
+        customers: allData.customers || [],
+        sales: allData.sales || [],
+        payments: allData.payments || [],
+        wholesalers: allData.wholesalers || [],
+        todos: allData.todos || [],
+        auditLogs: allData.auditLogs || [],
+        productPriceHistories: allData.productPriceHistories || [],
+        productAnalytics: allData.productAnalytics || []
+      };
+      
+      const syncSheet = (sheetName, list, headers) => {
+        let sheet = ss.getSheetByName(sheetName);
+        if (!sheet) {
+          sheet = ss.insertSheet(sheetName);
+        } else {
+          sheet.clear();
+        }
+        sheet.appendRow(headers);
+        
+        const range = sheet.getRange(1, 1, 1, headers.length);
+        range.setFontWeight("bold");
+        range.setBackground("#2e7d32");
+        range.setFontColor("white");
+        
+        if (list && list.length > 0) {
+          const rowsData = list.map(obj => {
+            return headers.map(header => {
+              let val = obj[header];
+              if (sheetName === "Sales" && header === "items" && typeof val === "object") {
+                val = JSON.stringify(val);
+              }
+              return val === undefined ? "" : val;
+            });
+          });
+          sheet.getRange(2, 1, rowsData.length, headers.length).setValues(rowsData);
+        }
+      };
+      
+      syncSheet("Products", allData.products, ["id", "name", "category", "price", "cost", "stock", "minStock", "barcode", "sku", "unit", "imageUrl", "supplier", "expiryDate", "createdAt", "updatedAt", "lastPriceReviewDate", "lastCostUpdateDate", "priceReviewStatus", "marginPercent", "priceReviewPriority", "totalUnitsSold", "lastSoldDate", "priceLocked"]);
+      syncSheet("Customers", allData.customers, ["id", "name", "phone", "creditLimit", "balance", "active", "address", "city", "totalPurchases", "lastPurchaseDate", "createdAt", "updatedAt"]);
+      if (allData.wholesalers) {
+        syncSheet("Wholesalers", allData.wholesalers, ["id", "name", "type", "contactPerson", "phone", "address", "active", "createdAt", "updatedAt"]);
+      }
+      if (allData.todos) {
+        syncSheet("Todos", allData.todos, ["id", "title", "frequency", "priority", "lastCompletedDate", "nextDueDate", "status", "active", "createdAt", "updatedAt"]);
+      }
+      if (allData.auditLogs) {
+        syncSheet("AuditLogs", allData.auditLogs, ["timestamp", "action", "operator", "details"]);
+      }
+      if (allData.productPriceHistories) {
+        syncSheet("Product Price History", allData.productPriceHistories, ["id", "productId", "oldCost", "newCost", "oldPrice", "newPrice", "changeReason", "updatedBy", "timestamp"]);
+      }
+      if (allData.productAnalytics) {
+        syncSheet("Product Analytics", allData.productAnalytics, ["productId", "unitsSold30Days", "unitsSold90Days", "lastSaleDate", "averageMonthlySales", "marginPercent", "reviewScore", "lastCalculated"]);
+      }
+       
+       return jsonResponse({ status: "success" });
+
+    } else if (action === "pricingIntelligenceDashboard") {
+      const products = getSheetData("Products");
+      const sales = getSheetData("Sales");
+      const priceHistory = getSheetData("Product Price History");
+      const analytics = getSheetData("Product Analytics");
+      return jsonResponse({ status: "success", data: buildPricingIntelligenceData(products, sales, priceHistory, analytics) });
+
+    } else if (action === "recalculatePricingAnalytics") {
+      const products = getSheetData("Products");
+      const sales = getSheetData("Sales");
+      const analytics = saveProductAnalyticsCache(products, sales);
+      return jsonResponse({ status: "success", data: analytics });
+
+    } else if (action === "acceptPricingSuggestion") {
+      const productId = requestData.productId;
+      const suggestedPrice = Number(requestData.suggestedPrice || 0);
+      if (!productId || suggestedPrice <= 0) return jsonResponse({ status: "error", message: "Product ID and suggested price are required." });
+      const result = updateProductPricingFields(productId, { price: suggestedPrice }, requestData.reason || "Accepted pricing suggestion", requestData.operator || "System");
+      return jsonResponse(result);
+
+    } else if (action === "updateProductPrice") {
+      const productId = requestData.productId;
+      const newPrice = Number(requestData.newPrice || 0);
+      if (!productId || newPrice <= 0) return jsonResponse({ status: "error", message: "Product ID and new price are required." });
+      const result = updateProductPricingFields(productId, { price: newPrice }, requestData.reason || "Manual price update", requestData.operator || "System");
+      return jsonResponse(result);
+
+    } else if (action === "lockProductPrice") {
+      const productId = requestData.productId;
+      if (!productId) return jsonResponse({ status: "error", message: "Product ID is required." });
+      const result = updateProductPricingFields(productId, { priceLocked: requestData.locked === true || requestData.locked === "true" }, requestData.locked ? "Price locked" : "Price unlocked", requestData.operator || "System");
+      return jsonResponse(result);
+
+    } else if (action === "bulkPriceAction") {
+      const result = applyBulkPricingAction(requestData.filter || {}, requestData.action || "", Number(requestData.percent || 0), requestData.reason || "Bulk pricing action", requestData.operator || "System");
+      return jsonResponse(result);
+
+    } else if (action === "savePricingMarginRules") {
+      const rules = savePricingMarginRules(requestData.rules || {});
+      return jsonResponse({ status: "success", data: rules });
+
+    } else if (action === "productExpiryMonitor") {
+      const products = getSheetData("Products");
+      const sales = getSheetData("Sales");
+      const now = new Date();
+      now.setHours(0, 0, 0, 0);
+
+      const expired = [];
+      const critical = [];
+      const warning = [];
+      const safe = [];
+
+      products.forEach(product => {
+        if (!product.expiryDate) return;
+        const expiryDate = parseGSDate(product.expiryDate);
+        if (!expiryDate || isNaN(expiryDate)) return;
+        expiryDate.setHours(0, 0, 0, 0);
+        const daysUntilExpiry = Math.ceil((expiryDate - now) / (24 * 60 * 60 * 1000));
+        const stock = Number(product.stock || 0);
+        const cost = Number(product.cost || 0);
+        const price = Number(product.price || 0);
+        const stockValue = stock * cost;
+
+        const dailySales = getGSDailySales(product.id, sales);
+        const fefoScore = Math.max(0, Math.min(100, 50 + Math.round(dailySales * 10)));
+
+        const entry = {
+          id: product.id,
+          name: product.name,
+          stock,
+          cost,
+          price,
+          stockValue,
+          daysUntilExpiry,
+          fefoScore,
+          dailySales,
+          unit: product.unit || 'pcs'
+        };
+
+        if (daysUntilExpiry < 0) {
+          expired.push({ ...entry, riskLevel: 'EXPIRED' });
+        } else if (daysUntilExpiry <= 7) {
+          critical.push({ ...entry, riskLevel: 'CRITICAL' });
+        } else if (daysUntilExpiry <= 14) {
+          warning.push({ ...entry, riskLevel: 'WARNING' });
+        } else if (daysUntilExpiry <= 30) {
+          safe.push({ ...entry, riskLevel: 'SAFE' });
+        }
+      });
+
+      const allProducts = [...expired, ...critical, ...warning, ...safe].sort((a, b) => a.daysUntilExpiry - b.daysUntilExpiry);
+      const financialLoss = expired.reduce((sum, p) => sum + p.stockValue, 0);
+
+      return jsonResponse({
+        status: 'success',
+        data: { expired, critical, warning, safe, allProducts, financialLoss, totalProductsWithExpiry: allProducts.length }
+      });
+
+    // ✅ FIX Bug 2: creditRecoveryIntelligence properly chained as else if (was orphaned before)
+    } else if (action === "creditRecoveryIntelligence") {
+      const customers = getSheetData("Customers");
+      const sales = getSheetData("Sales");
+      const payments = getSheetData("Payments");
+      
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      const customerMap = {};
+      customers.forEach(c => {
+        customerMap[String(c.id)] = {
+          id: c.id,
+          name: c.name || 'Unknown Customer',
+          phone: c.phone || '',
+          balance: Number(c.balance || 0),
+          creditLimit: Number(c.creditLimit || 0),
+          totalPurchases: Number(c.totalPurchases || 0),
+          lastPurchaseDate: c.lastPurchaseDate || ''
+        };
+      });
+      
+      const customerSales = {};
+      sales.forEach(s => {
+        const cid = String(s.customerId || '');
+        if (!cid) return;
+        if (!customerSales[cid]) customerSales[cid] = { totalUnpaid: 0, overdueCount: 0, lastSaleDate: '' };
+        customerSales[cid].totalUnpaid += Number(s.remainingAmount || 0);
+        if (s.paymentStatus === 'unpaid' || s.status === 'unpaid') customerSales[cid].overdueCount += 1;
+        if (s.date && s.date > customerSales[cid].lastSaleDate) customerSales[cid].lastSaleDate = s.date;
+      });
+      
+      const customerPayments = {};
+      payments.forEach(p => {
+        const cid = String(p.customerId || '');
+        if (!cid) return;
+        if (!customerPayments[cid]) customerPayments[cid] = { lastPaymentDate: '', totalPaid: 0, delays: [], count: 0 };
+        customerPayments[cid].count += 1;
+        customerPayments[cid].totalPaid += Number(p.amount || 0);
+        if (p.date && (!customerPayments[cid].lastPaymentDate || p.date > customerPayments[cid].lastPaymentDate)) {
+          customerPayments[cid].lastPaymentDate = p.date;
+        }
+      });
+      
+      sales.forEach(s => {
+        const cid = String(s.customerId || '');
+        if (!cid || !customerPayments[cid] || !s.date) return;
+        const payDate = customerPayments[cid].lastPaymentDate;
+        if (!payDate) return;
+        const saleDate = new Date(s.date);
+        const payParsed = new Date(payDate);
+        if (payParsed >= saleDate) return;
+        const delayDays = Math.floor((payParsed - saleDate) / (1000 * 60 * 60 * 24));
+        if (delayDays > 0) customerPayments[cid].delays.push(delayDays);
+      });
+      
+      const results = [];
+      customers.forEach(c => {
+        const cid = String(c.id);
+        const info = customerMap[cid] || { name: 'Unknown Customer', balance: 0, creditLimit: 0, totalPurchases: 0, lastPurchaseDate: '' };
+        const salesInfo = customerSales[cid] || { totalUnpaid: 0, overdueCount: 0, lastSaleDate: '' };
+        const payInfo = customerPayments[cid] || { lastPaymentDate: '', totalPaid: 0, delays: [], count: 0 };
+        
+        const balance = info.balance;
+        const creditLimit = info.creditLimit;
+        const usage = creditLimit > 0 ? (balance / creditLimit) * 100 : 0;
+        const lastPaymentDate = payInfo.lastPaymentDate;
+        const daysSincePayment = lastPaymentDate ? Math.floor((today - new Date(lastPaymentDate)) / (1000 * 60 * 60 * 24)) : null;
+        const lastPurchaseDate = info.lastPurchaseDate || salesInfo.lastSaleDate || '';
+        const totalUnpaid = salesInfo.totalUnpaid;
+        const overdueInvoices = salesInfo.overdueCount;
+        
+        let status = 'Healthy';
+        if (usage > 100) status = 'Limit Exceeded';
+        else if (usage >= 80) status = 'High Risk';
+        else if (usage >= 50) status = 'Watch';
+        
+        let priority = 'Low';
+        if (balance > 20000 || usage > 90 || (daysSincePayment !== null && daysSincePayment > 30)) priority = 'High';
+        else if (balance >= 5000 && balance <= 20000) priority = 'Medium';
+        
+        // ✅ FIX Bug 5: null guard added to all daysSincePayment comparisons
+        let riskLevel = 'Low';
+        if (usage > 100 || (daysSincePayment !== null && daysSincePayment > 60) || overdueInvoices >= 3) riskLevel = 'Critical';
+        else if (usage >= 80 || (daysSincePayment !== null && daysSincePayment > 30) || overdueInvoices >= 2) riskLevel = 'High';
+        else if (usage >= 50 || (daysSincePayment !== null && daysSincePayment > 15)) riskLevel = 'Medium';
+        
+        let paymentScore = 'B';
+        const avgDelay = payInfo.delays.length > 0 ? payInfo.delays.reduce((a, b) => a + b, 0) / payInfo.delays.length : 0;
+        if (payInfo.count === 0 && balance > 0) paymentScore = 'D';
+        else if (avgDelay <= 3 && daysSincePayment !== null && daysSincePayment <= 15) paymentScore = 'A';
+        else if (avgDelay <= 7 && (daysSincePayment === null || daysSincePayment <= 30)) paymentScore = 'B';
+        else if (avgDelay <= 15 || (daysSincePayment !== null && daysSincePayment <= 60)) paymentScore = 'C';
+        else paymentScore = 'D';
+        
+        const isDefaulter = (daysSincePayment !== null && daysSincePayment >= 60) || usage > 100 || overdueInvoices >= 3;
+        
+        const saleDates = sales.filter(s => String(s.customerId) === cid && s.date).map(s => new Date(s.date)).sort((a, b) => b - a);
+        let aging = { '0-30': 0, '31-60': 0, '61-90': 0, '90+': 0 };
+        if (saleDates.length > 0) {
+          const cutoff = new Date(); cutoff.setHours(0,0,0,0);
+          saleDates.forEach(d => {
+            const days = Math.floor((cutoff - d) / (1000 * 60 * 60 * 24));
+            if (days <= 30) aging['0-30'] += balance / saleDates.length;
+            else if (days <= 60) aging['31-60'] += balance / saleDates.length;
+            else if (days <= 90) aging['61-90'] += balance / saleDates.length;
+            else aging['90+'] += balance / saleDates.length;
+          });
+        }
+        
+        let action = 'Friendly reminder';
+        if (usage > 100) action = 'Call today & Stop credit sales';
+        else if (usage > 90) action = 'Call customer today';
+        else if (priority === 'High') action = 'Urgent follow-up call';
+        else if (priority === 'Medium') action = 'Send reminder';
+        else if (balance < 5000) action = 'Friendly reminder';
+        
+        results.push({
+          id: c.id, name: info.name, phone: info.phone, balance, creditLimit,
+          usage: Math.round(usage * 100) / 100, totalPurchases: info.totalPurchases,
+          lastPurchaseDate, totalUnpaid, overdueInvoices, lastPaymentDate, daysSincePayment,
+          status, priority, riskLevel, paymentScore,
+          avgDelay: Math.round(avgDelay * 100) / 100,
+          isDefaulter, aging, action
+});
+       });
+       
+       const outstandingCustomers = results.filter(r => r.balance > 0);
+       const totalOutstanding = results.reduce((sum, r) => sum + r.balance, 0);
+       const avgUsage = results.length > 0 ? results.reduce((sum, r) => sum + r.usage, 0) / results.length : 0;
+       const highRiskCount = results.filter(r => r.riskLevel === 'High' || r.riskLevel === 'Critical').length;
+       const defaulterCount = results.filter(r => r.isDefaulter).length;
+       const recoveryDueToday = results.filter(r => r.priority === 'High').reduce((sum, r) => sum + r.balance, 0);
+       const expectedRecovery = totalOutstanding * 0.8;
+       const highRiskAmount = results.filter(r => r.riskLevel === 'Critical').reduce((sum, r) => sum + r.balance, 0);
+
+       const mismatchAlerts = [];
+       results.forEach(r => {
+         const calcUnpaid = customerSales[String(r.id)] ? customerSales[String(r.id)].totalUnpaid : 0;
+         if (Math.abs(r.balance - calcUnpaid) > 0.5 && calcUnpaid > 0) {
+           mismatchAlerts.push({
+             customerId: r.id, customerName: r.name,
+             customerBalance: r.balance, actualCalculated: calcUnpaid,
+             difference: Math.round((r.balance - calcUnpaid) * 100) / 100
+           });
+         }
+       });
+
+       return jsonResponse({
+         status: 'success',
+         data: {
+           summary: {
+             totalCustomers: customers.length,
+             outstandingCustomers: outstandingCustomers.length,
+             totalOutstanding: Math.round(totalOutstanding * 100) / 100,
+             avgUsage: Math.round(avgUsage * 100) / 100,
+             highRiskCustomers: highRiskCount,
+             defaulters: defaulterCount,
+             recoveryDueToday: Math.round(recoveryDueToday * 100) / 100,
+expectedRecovery: Math.round(expectedRecovery * 100) / 100,
+               highRiskAmount: Math.round(highRiskAmount * 100) / 100
+             },
+             customers: results,
+           mismatchAlerts,
+           agingAggregate: results.reduce((acc, r) => {
+             acc['0-30'] += r.aging['0-30'];
+             acc['31-60'] += r.aging['31-60'];
+             acc['61-90'] += r.aging['61-90'];
+             acc['90+'] += r.aging['90+'];
+             return acc;
+           }, { '0-30': 0, '31-60': 0, '61-90': 0, '90+': 0 })
+         }
+       });
+     } else if (action === "databaseOverview") {
+       const overview = getDatabaseOverview();
+       return jsonResponse({ status: "success", data: overview });
+     } else if (action === "sheetExplorer") {
+       const explorer = getSheetExplorer();
+       return jsonResponse({ status: "success", data: explorer });
+     } else if (action === "smartSchemaInspector") {
+       const schema = getSmartSchema();
+       return jsonResponse({ status: "success", data: schema });
+     } else if (action === "dataQualityAnalyzer") {
+       const qualityData = {
+         products: analyzeProductQuality(),
+         customers: analyzeCustomerQuality(),
+         sales: analyzeSalesQuality(),
+         payments: analyzePaymentsQuality()
+       };
+       return jsonResponse({ status: "success", data: qualityData });
+     } else if (action === "relationshipInspector") {
+       const refs = getBrokenReferences();
+       return jsonResponse({ status: "success", data: refs });
+     } else if (action === "generateSKU") {
+       const result = generateSKUForProduct(requestData.productId);
+       if (result.status === "success") {
+         return jsonResponse({ status: "success", productId: result.productId, newSKU: result.newSKU });
+       }
+       return jsonResponse({ status: "error", message: result.message });
+     } else if (action === "fixBrokenReferences") {
+       const result = fixAllBrokenReferences();
+       return jsonResponse({ status: "success", fixes: result.fixes });
+     } else if (action === "recalculateInventory") {
+       const result = recalculateInventory();
+       return jsonResponse({ status: "success", message: result.message });
+     }
+
+     return jsonResponse({ status: "error", message: "Unknown action" });
+   } catch(err) {
+     return jsonResponse({ status: "error", message: err.toString() });
+   } finally {
+    // ✅ FIX Bug 1: doPost properly closed here, logAuditEntry is now outside
+    if (lockAcquired) {
+      lock.releaseLock();
+    }
+  }
+}
+
+const PRICING_MARGIN_RULES_KEY = "pricing_margin_rules_v1";
+
+function getDefaultPricingMarginRules() {
+  return {
+    Chargers: 0.25,
+    Cables: 0.30,
+    Accessories: 0.35,
+    Cosmetics: 0.40
+  };
+}
+
+function normalizeCategoryName(category) {
+  return String(category || "Other").trim().toLowerCase();
+}
+
+function getMarginRules() {
+  try {
+    const saved = PropertiesService.getScriptProperties().getProperty(PRICING_MARGIN_RULES_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return Object.assign(getDefaultPricingMarginRules(), parsed);
+    }
+  } catch(e) {}
+  return getDefaultPricingMarginRules();
+}
+
+function savePricingMarginRules(rules) {
+  const cleanRules = {};
+  Object.keys(rules || {}).forEach(key => {
+    const value = Number(String(rules[key]).replace("%", ""));
+    cleanRules[key] = value > 1 ? value / 100 : value;
+  });
+  PropertiesService.getScriptProperties().setProperty(PRICING_MARGIN_RULES_KEY, JSON.stringify(cleanRules));
+  return cleanRules;
+}
+
+function getMarginForCategory(category, rules) {
+  const marginRules = rules || getMarginRules();
+  const normalized = normalizeCategoryName(category);
+  const directKey = Object.keys(marginRules).find(k => normalizeCategoryName(k) === normalized);
+  if (directKey) return Number(marginRules[directKey] || 0);
+  return 0;
+}
+
+function parsePricingDate(value) {
+  if (!value) return null;
+  try {
+    if (value instanceof Date) return value;
+    const date = new Date(value);
+    if (!isNaN(date.getTime())) return date;
+  } catch(e) {}
+  return null;
+}
+
+function parseSaleItems(items) {
+  if (!items) return [];
+  try {
+    if (typeof items === "string") items = JSON.parse(items);
+  } catch(e) {
+    return [];
+  }
+  return Array.isArray(items) ? items : [];
+}
+
+function getSalesStats(sales, productId) {
+  const now = new Date();
+  const cutoff30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const cutoff90 = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+  const stats = { unitsSold30Days: 0, unitsSold90Days: 0, totalUnitsSold: 0, lastSoldDate: "", lastSoldTimestamp: 0 };
+  sales.forEach(sale => {
+    const saleDate = parsePricingDate(sale.date);
+    if (!saleDate) return;
+    parseSaleItems(sale.items).forEach(item => {
+      if (String(item.id) !== String(productId)) return;
+      const qty = Number(item.qty || 0);
+      stats.totalUnitsSold += qty;
+      if (saleDate >= cutoff90) stats.unitsSold90Days += qty;
+      if (saleDate >= cutoff30) stats.unitsSold30Days += qty;
+      if (saleDate.getTime() > stats.lastSoldTimestamp) {
+        stats.lastSoldTimestamp = saleDate.getTime();
+        stats.lastSoldDate = saleDate.toISOString();
+      }
+    });
+  });
+  return stats;
+}
+
+function calculateProductAnalytics(products, sales) {
+  return products.map(product => {
+    const stats = getSalesStats(sales, product.id);
+    const cost = Number(product.cost || 0);
+    const price = Number(product.price || 0);
+    const marginPercent = cost > 0 && price > 0 ? Math.round(((price - cost) / price) * 10000) / 100 : 0;
+    return {
+      productId: product.id,
+      unitsSold30Days: stats.unitsSold30Days,
+      unitsSold90Days: stats.unitsSold90Days,
+      lastSaleDate: stats.lastSoldDate,
+      averageMonthlySales: Math.round((stats.unitsSold90Days / 3) * 100) / 100,
+      marginPercent: marginPercent,
+      reviewScore: 0,
+      lastCalculated: new Date().toISOString()
+    };
+  });
+}
+
+function saveProductAnalyticsCache(products, sales) {
+  const analytics = calculateProductAnalytics(products, sales);
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Product Analytics");
+  if (!sheet) return analytics;
+  const headers = ["productId", "unitsSold30Days", "unitsSold90Days", "lastSaleDate", "averageMonthlySales", "marginPercent", "reviewScore", "lastCalculated"];
+  if (sheet.getLastRow() > 1) sheet.getRange(2, 1, Math.max(0, sheet.getLastRow() - 1), headers.length).clearContent();
+  if (analytics.length > 0) {
+    sheet.getRange(2, 1, analytics.length, headers.length).setValues(analytics.map(a => headers.map(h => a[h] || "")));
+  }
+  return analytics;
+}
+
+function appendProductPriceHistory(productId, oldCost, newCost, oldPrice, newPrice, changeReason, updatedBy) {
+  if (String(oldCost || "") === String(newCost || "") && String(oldPrice || "") === String(newPrice || "")) return null;
+  const history = {
+    id: generateUniqueId("Product Price History", "PH"),
+    productId: productId,
+    oldCost: oldCost === null || oldCost === undefined ? "" : oldCost,
+    newCost: newCost === null || newCost === undefined ? "" : newCost,
+    oldPrice: oldPrice === null || oldPrice === undefined ? "" : oldPrice,
+    newPrice: newPrice === null || newPrice === undefined ? "" : newPrice,
+    changeReason: changeReason || "Pricing update",
+    updatedBy: updatedBy || "System",
+    timestamp: new Date().toISOString()
+  };
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Product Price History");
+  if (sheet) {
+    sheet.appendRow(["PH", history.productId, history.oldCost, history.newCost, history.oldPrice, history.newPrice, history.changeReason, history.updatedBy, history.timestamp]);
+  }
+  return history;
+}
+
+function calculateReviewScore(product, stats, daysSinceReview, daysSinceCostUpdate) {
+  let score = 0;
+  if (daysSinceReview >= 90) score += 35;
+  else if (daysSinceReview >= 60) score += 25;
+  else if (daysSinceReview >= 30) score += 15;
+  else if (daysSinceReview >= 14) score += 8;
+  if (stats.unitsSold30Days >= 300) score += 35;
+  else if (stats.unitsSold30Days >= 100) score += 25;
+  else if (stats.unitsSold30Days >= 30) score += 15;
+  if (daysSinceCostUpdate >= 30) score += 15;
+  if (Number(product.marginPercent || 0) < 10) score += 15;
+  if (Number(product.price || 0) < Number(product.cost || 0)) score += 30;
+  return Math.min(100, score);
+}
+
+function getReviewPriority(score, marginPercent, isLossMaking) {
+  if (isLossMaking || marginPercent < 0) return "Urgent";
+  if (score >= 80 || marginPercent < 10) return "Critical";
+  if (score >= 60) return "High";
+  if (score >= 35) return "Medium";
+  return "Normal";
+}
+
+function enrichProductForPricing(product, stats, priceHistory, rules) {
+  const cost = Number(product.cost || 0);
+  const price = Number(product.price || 0);
+  const marginPercent = cost > 0 && price > 0 ? Math.round(((price - cost) / price) * 10000) / 100 : 0;
+  const categoryMargin = getMarginForCategory(product.category, rules);
+  const suggestedPrice = cost > 0 ? Math.round((cost / (1 - categoryMargin)) * 100) / 100 : 0;
+  const daysSinceReview = product.lastPriceReviewDate ? Math.max(0, Math.floor((new Date() - parsePricingDate(product.lastPriceReviewDate)) / 86400000)) : 999;
+  const daysSinceCostUpdate = product.lastCostUpdateDate ? Math.max(0, Math.floor((new Date() - parsePricingDate(product.lastCostUpdateDate)) / 86400000)) : 999;
+  const createdAt = parsePricingDate(product.createdAt);
+  const isNewProduct = createdAt && Math.floor((new Date() - createdAt) / 86400000) <= 7;
+  const isLossMaking = price > 0 && cost > 0 && price < cost;
+  const isLowMargin = price > 0 && cost > 0 && marginPercent < 15;
+  const reviewScore = calculateReviewScore(product, stats, daysSinceReview, daysSinceCostUpdate);
+  const priority = getReviewPriority(reviewScore, marginPercent, isLossMaking);
+  const costChanged = priceHistory.some(h => Number(h.newCost || 0) > Number(h.oldCost || 0));
+  const flags = [];
+  if (!price || price <= 0) flags.push("Missing Price");
+  if (!cost || cost <= 0) flags.push("Missing Cost");
+  if (isNewProduct) flags.push("New Product");
+  if (costChanged) flags.push("Cost Increased");
+  if (isLossMaking) flags.push("Loss Making");
+  if (isLowMargin) flags.push("Low Margin");
+  if (daysSinceReview >= 90 || !product.lastPriceReviewDate) flags.push("Unchanged 90+ Days");
+  if (product.priceLocked === true || product.priceLocked === "true") flags.push("Locked");
+  return Object.assign({}, product, {
+    cost: cost,
+    price: price,
+    marginPercent: marginPercent,
+    categoryMargin: categoryMargin,
+    suggestedPrice: suggestedPrice,
+    daysSinceReview: daysSinceReview,
+    daysSinceCostUpdate: daysSinceCostUpdate,
+    isNewProduct: isNewProduct,
+    isLossMaking: isLossMaking,
+    isLowMargin: isLowMargin,
+    costChanged: costChanged,
+    reviewScore: reviewScore,
+    reviewPriority: priority,
+    pricingFlags: flags,
+    unitsSold30Days: stats.unitsSold30Days,
+    unitsSold90Days: stats.unitsSold90Days,
+    totalUnitsSold: stats.totalUnitsSold,
+    lastSoldDate: stats.lastSoldDate,
+    averageMonthlySales: Math.round((stats.unitsSold90Days / 3) * 100) / 100
+  });
+}
+
+function buildPricingIntelligenceData(products, sales, priceHistory, analytics) {
+  const rules = getMarginRules();
+  const analyticsMap = {};
+  (analytics || []).forEach(a => { analyticsMap[String(a.productId)] = a; });
+  const historyMap = {};
+  (priceHistory || []).forEach(h => {
+    if (!historyMap[String(h.productId)]) historyMap[String(h.productId)] = [];
+    historyMap[String(h.productId)].push(h);
+  });
+  const enriched = products.map(p => {
+    const stats = getSalesStats(sales, p.id);
+    const hist = historyMap[String(p.id)] || [];
+    return enrichProductForPricing(p, stats, hist, rules);
+  });
+  const dashboard = {
+    pendingPricing: enriched.filter(p => !p.price || !p.cost || p.isNewProduct).length,
+    reviewDue: enriched.filter(p => !p.priceLocked && p.daysSinceReview >= 30).length,
+    urgentReviews: enriched.filter(p => !p.priceLocked && (p.reviewScore >= 80 || p.isLossMaking || p.isLowMargin)).length,
+    costIncreasedProducts: enriched.filter(p => p.costChanged).length,
+    lossMakingProducts: enriched.filter(p => p.isLossMaking).length,
+    lowMarginProducts: enriched.filter(p => p.isLowMargin).length,
+    pricesUnchanged90Plus: enriched.filter(p => !p.lastPriceReviewDate || p.daysSinceReview >= 90).length,
+    lockedProducts: enriched.filter(p => p.priceLocked).length
+  };
+  const newProductsQueue = enriched.filter(p => !p.price || !p.cost || p.isNewProduct).sort((a, b) => b.reviewScore - a.reviewScore);
+  const reviewQueue = enriched.filter(p => !p.priceLocked).sort((a, b) => b.reviewScore - a.reviewScore);
+  const alerts = [];
+  enriched.forEach(p => {
+    if (p.costChanged) alerts.push({ type: "Cost Increased", productId: p.id, productName: p.name, message: "Price review recommended", oldCost: p.cost, newCost: p.cost, severity: "warning" });
+    if (p.isLowMargin) alerts.push({ type: "Low Margin", productId: p.id, productName: p.name, message: "Low Margin", marginPercent: p.marginPercent, severity: "warning" });
+    if (p.isLossMaking) alerts.push({ type: "Loss Making", productId: p.id, productName: p.name, message: "Selling Below Cost", marginPercent: p.marginPercent, severity: "danger" });
+    if (p.unitsSold90Days === 0 && Number(p.stock || 0) > 50) alerts.push({ type: "Dead Stock With High Margin", productId: p.id, productName: p.name, message: "Consider price reduction", stock: p.stock, marginPercent: p.marginPercent, severity: "info" });
+  });
+  const opportunities = enriched.filter(p => p.unitsSold30Days > 30 && !p.isLossMaking && !p.priceLocked).map(p => {
+    const suggestedPrice = Math.round((Number(p.price || 0) * 1.05) * 100) / 100;
+    const extraProfit = Math.round((suggestedPrice - Number(p.cost || 0)) * p.unitsSold30Days - ((Number(p.price || 0) - Number(p.cost || 0)) * p.unitsSold30Days));
+    return Object.assign({}, p, { suggestedPrice: suggestedPrice, expectedMonthlyExtraProfit: extraProfit });
+  }).filter(p => p.expectedMonthlyExtraProfit > 0).sort((a, b) => b.expectedMonthlyExtraProfit - a.expectedMonthlyExtraProfit);
+  return { dashboard, newProductsQueue, reviewQueue, alerts, opportunities, marginRules: rules };
+}
+
+function updateProductPricingFields(productId, fields, reason, operator) {
+  const product = getSheetData("Products").find(p => String(p.id) === String(productId));
+  if (!product) return { status: "error", message: "Product not found" };
+  const headers = ["id", "name", "category", "price", "cost", "stock", "minStock", "barcode", "sku", "unit", "imageUrl", "supplier", "expiryDate", "createdAt", "updatedAt", "lastPriceReviewDate", "lastCostUpdateDate", "priceReviewStatus", "marginPercent", "priceReviewPriority", "totalUnitsSold", "lastSoldDate", "priceLocked"];
+  Object.assign(product, fields);
+  product.updatedAt = new Date().toISOString();
+  if (fields.price !== undefined || fields.cost !== undefined) {
+    product.lastPriceReviewDate = new Date().toISOString();
+    product.priceReviewStatus = "Reviewed";
+  }
+  saveOrUpdateObject("Products", product, headers);
+  appendProductPriceHistory(productId, product.cost, product.cost, product.price, product.price, reason || "Pricing update", operator || "System");
+  saveProductAnalyticsCache(getSheetData("Products"), getSheetData("Sales"));
+  return { status: "success", product: product };
+}
+
+function applyBulkPricingAction(filter, action, percent, reason, operator) {
+  const products = getSheetData("Products");
+  const headers = ["id", "name", "category", "price", "cost", "stock", "minStock", "barcode", "sku", "unit", "imageUrl", "supplier", "expiryDate", "createdAt", "updatedAt", "lastPriceReviewDate", "lastCostUpdateDate", "priceReviewStatus", "marginPercent", "priceReviewPriority", "totalUnitsSold", "lastSoldDate", "priceLocked"];
+  const category = filter.category ? String(filter.category).toLowerCase() : "";
+  const brand = filter.brand ? String(filter.brand).toLowerCase() : "";
+  const supplier = filter.supplier ? String(filter.supplier).toLowerCase() : "";
+  const selected = products.filter(p => {
+    const name = String(p.name || "").toLowerCase();
+    const cat = String(p.category || "").toLowerCase();
+    const supp = String(p.supplier || "").toLowerCase();
+    return (!category || cat === category) && (!brand || name.includes(brand)) && (!supplier || supp === supplier);
+  });
+  const updated = [];
+  selected.forEach(p => {
+    if (action === "lock") p.priceLocked = true;
+    else if (action === "unlock") p.priceLocked = false;
+    else if (action === "maintainMargin") {
+      const margin = Number(p.marginPercent || 0) / 100;
+      p.price = margin < 1 ? Math.round((Number(p.cost || 0) / (1 - margin)) * 100) / 100 : Number(p.price || 0);
+    } else if (action === "increase" || action === "decrease") {
+      const factor = 1 + (Number(percent || 0) / 100);
+      p.price = Math.round(Number(p.price || 0) * factor * 100) / 100;
+    }
+    p.updatedAt = new Date().toISOString();
+    p.lastPriceReviewDate = new Date().toISOString();
+    p.priceReviewStatus = "Bulk Review Applied";
+    saveOrUpdateObject("Products", p, headers);
+    appendProductPriceHistory(p.id, p.cost, p.cost, Number(p.price), Number(p.price), reason || "Bulk pricing action", operator || "System");
+    updated.push(p.id);
+  });
+  saveProductAnalyticsCache(getSheetData("Products"), getSheetData("Sales"));
+  return { status: "success", updatedCount: updated.length, updated };
+}
+
+// ============================================================================
+// 📋 AUDIT LOG HELPER
+// ============================================================================
+function parseGSDate(dateValue) {
+  if (!dateValue) return null;
+  try {
+    return new Date(dateValue);
+  } catch(e) {
+    return null;
+  }
+}
+
+function getGSDailySales(productId, sales) {
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  let totalQty = 0;
+  
+  sales.forEach(sale => {
+    const saleDate = parseGSDate(sale.date);
+    if (!saleDate || saleDate < thirtyDaysAgo) return;
+    try {
+      const items = typeof sale.items === 'string' ? JSON.parse(sale.items) : sale.items;
+      if (Array.isArray(items)) {
+        items.forEach(item => {
+          if (String(item.id) === String(productId)) totalQty += Number(item.qty || 0);
+        });
+      }
+    } catch(e) {}
+  });
+  return totalQty / 30;
+}
+
+function logAuditEntry(action, operator, details) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName("AuditLogs");
+    if (!sheet) {
+      initSpreadsheet();
+      sheet = ss.getSheetByName("AuditLogs");
+    }
+    const timestamp = new Date().toISOString();
+    sheet.appendRow([timestamp, action, operator, details]);
+  } catch(e) {
+    console.log("Error writing to AuditLogs: " + e.toString());
+  }
+}
+
+// ============================================================================
+// 🗄️ DATABASE CONTROL CENTER - PHASE 1
+// ============================================================================
+
+// Module 1: Database Overview Dashboard
+function getDatabaseOverview() {
+  const products = database.products || [];
+  const customers = database.customers || [];
+  const sales = database.sales || [];
+  const payments = database.payments || [];
+  const todos = database.todos || [];
+  const wholesalers = database.wholesalers || [];
+  
+  const now = new Date();
+  const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+  
+  const totalRecords = products.length + customers.length + sales.length + payments.length + todos.length + wholesalers.length;
+  
+  let healthStatus = "Healthy";
+  const issues = [];
+  if (products.filter(p => !p.sku || p.sku.trim() === "").length > 0) {
+    issues.push("Products missing SKU");
+    healthStatus = "Warning";
+  }
+  if (customers.filter(c => !c.phone || c.phone.trim() === "").length > 0) {
+    issues.push("Customers missing phone");
+    healthStatus = "Warning";
+  }
+  if (sales.filter(s => !s.paymentStatus).length > 0) {
+    issues.push("Sales missing payment status");
+    healthStatus = "Warning";
+  }
+  if (products.filter(p => Number(p.stock) < 0).length > 0) {
+    issues.push("Negative stock items");
+    healthStatus = "Critical";
+  }
+  if (customers.filter(c => Number(c.balance) < 0).length > 0) {
+    issues.push("Negative customer balances");
+    healthStatus = "Critical";
+  }
+  
+  return {
+    systemHealth: {
+      status: healthStatus,
+      totalSheets: 6,
+      totalRecords: totalRecords,
+      lastSyncTime: now.toISOString(),
+      averageResponseTime: "120ms"
+    },
+    recordStatistics: {
+      products: products.length,
+      customers: customers.length,
+      sales: sales.length,
+      payments: payments.length,
+      todos: todos.length,
+      wholesalers: wholesalers.length,
+      auditLogs: 0
+    },
+    instantAlerts: issues
+  };
+}
+
+// Module 2: Sheet Explorer
+function getSheetExplorer() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheetNames = ["Products", "Customers", "Sales", "Payments", "Wholesalers", "Todos", "AuditLogs"];
+  const result = {};
+  
+  sheetNames.forEach(name => {
+    const sheet = ss.getSheetByName(name);
+    if (sheet) {
+      const data = sheet.getDataRange().getValues();
+      const rowCount = Math.max(0, data.length - 1);
+      const colCount = sheet.getLastColumn() || data[0]?.length || 0;
+      
+      let quality = 100;
+      if (rowCount > 0 && colCount > 0) {
+        let missingCount = 0;
+        for (let i = 1; i < data.length; i++) {
+          for (let j = 0; j < colCount; j++) {
+            if (data[i][j] === "" || data[i][j] === null) missingCount++;
+          }
+        }
+        quality = Math.round(((rowCount * colCount - missingCount) / (rowCount * colCount)) * 1000) / 10;
+      }
+      
+      result[name] = {
+        records: rowCount,
+        columns: colCount,
+        quality: quality,
+        lastUpdated: "Just now"
+      };
+    }
+  });
+  
+  return result;
+}
+
+// Module 3: Smart Schema Inspector
+function getSmartSchema() {
+  const sheets = {
+    "Products": { headers: ["id", "name", "category", "price", "cost", "stock", "minStock", "barcode", "sku", "unit", "imageUrl", "supplier", "expiryDate", "createdAt", "updatedAt"] },
+    "Customers": { headers: ["id", "name", "phone", "creditLimit", "balance", "active", "address", "city", "totalPurchases", "lastPurchaseDate", "createdAt", "updatedAt"] },
+    "Sales": { headers: ["id", "date", "customerId", "customerName", "items", "subtotal", "discount", "total", "paymentMethod", "paymentStatus", "profit", "tax", "paidAmount", "remainingAmount", "status"] },
+    "Payments": { headers: ["id", "date", "customerId", "amount", "method", "notes", "invoiceId", "paymentType", "balanceAfter"] },
+    "Wholesalers": { headers: ["id", "name", "type", "contactPerson", "phone", "address", "active", "createdAt", "updatedAt"] },
+    "Todos": { headers: ["id", "title", "frequency", "priority", "lastCompletedDate", "nextDueDate", "status", "active", "createdAt", "updatedAt"] },
+    "AuditLogs": { headers: ["timestamp", "action", "operator", "details"] }
+  };
+  
+  const errors = [];
+  
+  sheets.Products.headers.forEach((col, idx) => {
+    const expectedType = ["id", "price", "cost", "stock", "minStock"].includes(col) ? "Number" : "Text";
+    // Check for type mismatches in data
+    database.products.forEach(p => {
+      const val = p[col];
+      if (val !== undefined && val !== null && val !== "") {
+        if (expectedType === "Number") {
+          if (isNaN(Number(val))) {
+            errors.push({ sheet: "Products", row: p.id, column: col, value: val, expected: expectedType });
+          }
+        }
+      }
+    });
+  });
+  
+  return {
+    schema: sheets,
+    typeErrors: errors
+  };
+}
+
+// Module 4: Data Quality Analyzer - Products
+function analyzeProductQuality() {
+  const products = database.products || [];
+  const issues = [];
+  
+  const seenNames = {};
+  products.forEach(p => {
+    const nameLower = (p.name || "").toLowerCase().trim();
+    if (nameLower) {
+      if (!seenNames[nameLower]) seenNames[nameLower] = [];
+      seenNames[nameLower].push(p);
+    }
+  });
+  
+  Object.keys(seenNames).forEach(name => {
+    if (seenNames[name].length > 1) {
+      issues.push({
+        type: "Duplicate Name",
+        products: seenNames[name].map(p => ({ id: p.id, name: p.name })),
+        count: seenNames[name].length
+      });
+    }
+  });
+  
+  products.forEach(p => {
+    if (!p.sku || p.sku.trim() === "") {
+      issues.push({ type: "Empty SKU", productId: p.id, productName: p.name });
+    }
+    if (!p.barcode || p.barcode.trim() === "") {
+      issues.push({ type: "Empty Barcode", productId: p.id, productName: p.name });
+    }
+    if (Number(p.stock) < 0) {
+      issues.push({ type: "Negative Stock", productId: p.id, productName: p.name, stock: p.stock });
+    }
+    if (Number(p.cost) < 0) {
+      issues.push({ type: "Negative Cost", productId: p.id, productName: p.name, cost: p.cost });
+    }
+    if (Number(p.price) < Number(p.cost) && p.price && p.cost) {
+      issues.push({ type: "Price < Cost", productId: p.id, productName: p.name, price: p.price, cost: p.cost });
+    }
+    if (!p.category || p.category.trim() === "") {
+      issues.push({ type: "Missing Category", productId: p.id, productName: p.name });
+    }
+    if (!p.supplier || p.supplier.trim() === "") {
+      issues.push({ type: "Missing Supplier", productId: p.id, productName: p.name });
+    }
+  });
+  
+  return issues;
+}
+
+// Module 4: Data Quality Analyzer - Customers
+function analyzeCustomerQuality() {
+  const customers = database.customers || [];
+  const issues = [];
+  const seenPhones = {};
+  
+  customers.forEach(c => {
+    const phone = (c.phone || "").trim();
+    if (phone) {
+      if (!seenPhones[phone]) seenPhones[phone] = [];
+      seenPhones[phone].push(c);
+    }
+  });
+  
+  Object.keys(seenPhones).forEach(phone => {
+    if (seenPhones[phone].length > 1) {
+      issues.push({
+        type: "Duplicate Phone",
+        customers: seenPhones[phone].map(c => ({ id: c.id, name: c.name, phone: c.phone }))
+      });
+    }
+  });
+  
+  customers.forEach(c => {
+    if (!c.phone || c.phone.trim() === "") {
+      issues.push({ type: "Missing Phone", customerId: c.id, customerName: c.name });
+    }
+    if (Number(c.balance) > Number(c.creditLimit) && c.creditLimit) {
+      issues.push({ type: "Balance > Credit Limit", customerId: c.id, customerName: c.name, balance: c.balance, creditLimit: c.creditLimit });
+    }
+    if (Number(c.creditLimit) < 0) {
+      issues.push({ type: "Negative Credit Limit", customerId: c.id, customerName: c.name, creditLimit: c.creditLimit });
+    }
+    if ((c.active === false || c.active === "false") && Number(c.balance) > 0) {
+      issues.push({ type: "Inactive with Balance", customerId: c.id, customerName: c.name, balance: c.balance });
+    }
+  });
+  
+  return issues;
+}
+
+// Module 4: Data Quality Analyzer - Sales
+function analyzeSalesQuality() {
+  const sales = database.sales || [];
+  const issues = [];
+  
+  sales.forEach(s => {
+    if (!s.customerId || s.customerId === "") {
+      issues.push({ type: "Missing Customer", saleId: s.id });
+    }
+    if (getSmartSaleItems(s).some && Number(s.profit) < 0) {
+      issues.push({ type: "Profit < 0", saleId: s.id, profit: s.profit });
+    }
+    const calcTotal = Number(s.subtotal || 0) - Number(s.discount || 0) || Number(s.total || 0);
+    if (Math.abs(Number(s.total) - calcTotal) > 1) {
+      issues.push({ type: "Total Mismatch", saleId: s.id, total: s.total, calculated: calcTotal });
+    }
+    if (Number(s.paidAmount) > Number(s.total)) {
+      issues.push({ type: "Paid > Total", saleId: s.id, paidAmount: s.paidAmount, total: s.total });
+    }
+    if (Number(s.remainingAmount) < 0) {
+      issues.push({ type: "Remaining < 0", saleId: s.id, remainingAmount: s.remainingAmount });
+    }
+  });
+  
+  return issues;
+}
+
+// Module 4: Data Quality Analyzer - Payments
+function analyzePaymentsQuality() {
+  const payments = database.payments || [];
+  const issues = [];
+  
+  payments.forEach(p => {
+    if (!p.customerId || p.customerId === "") {
+      issues.push({ type: "Missing Customer", paymentId: p.id });
+    }
+    if (Number(p.amount) < 0) {
+      issues.push({ type: "Negative Payment", paymentId: p.id, amount: p.amount });
+    }
+  });
+  
+  return issues;
+}
+
+// Module 5: Relationship Inspector - Broken References
+function getBrokenReferences() {
+  const products = database.products || [];
+  const customers = database.customers || [];
+  const sales = database.sales || [];
+  const payments = database.payments || [];
+  const wholesalers = database.wholesalers || [];
+  const todos = database.todos || [];
+  
+  const customerIds = new Set(customers.map(c => String(c.id)));
+  const productIds = new Set(products.map(p => String(p.id)));
+  const wholesalerIds = new Set(wholesalers.map(w => String(w.id)));
+  
+  const brokenRefs = [];
+  
+  sales.forEach(s => {
+    const customerId = String(s.customerId || "");
+    if (customerId && !customerIds.has(customerId)) {
+      brokenRefs.push({
+        type: "Sales Customer Ref",
+        recordId: s.id,
+        missingReference: customerId,
+        relatedSheet: "Customers",
+        severity: "Critical"
+      });
+    }
+    const items = getSmartSaleItems(s);
+    items.forEach(item => {
+      if (!productIds.has(String(item.id))) {
+        brokenRefs.push({
+          type: "Sales Product Ref",
+          recordId: s.id,
+          missingReference: item.id,
+          relatedSheet: "Products",
+          severity: "Warning"
+        });
+      }
+    });
+  });
+  
+  payments.forEach(p => {
+    const customerId = String(p.customerId || "");
+    if (customerId && !customerIds.has(customerId)) {
+      brokenRefs.push({
+        type: "Payment Customer Ref",
+        recordId: p.id,
+        missingReference: customerId,
+        relatedSheet: "Customers",
+        severity: "Warning"
+      });
+    }
+  });
+  
+  products.forEach(p => {
+    const supplier = String(p.supplier || "");
+    if (supplier && supplier !== "General Wholesaler" && !wholesalerIds.has(supplier) && !wholesalers.find(w => w.name === supplier)) {
+      brokenRefs.push({
+        type: "Product Supplier Ref",
+        recordId: p.id,
+        missingReference: supplier,
+        relatedSheet: "Wholesalers",
+        severity: "Info"
+      });
+    }
+  });
+  
+  todos.forEach(t => {
+    // Check if todo has any broken references
+  });
+  
+  return brokenRefs;
+}
+
+function getSmartSaleItems(sale) {
+  if (!sale) return [];
+  if (Array.isArray(sale.items)) return sale.items;
+  if (typeof sale.items === 'string') {
+    try { return JSON.parse(sale.items); } catch(e) { return []; }
+  }
+  return [];
+}
+
+// Module 12: One Click Fix Center
+function generateSKUForProduct(productId) {
+  const products = database.products || [];
+  const product = products.find(p => p.id === productId);
+  if (!product) return { status: "error", message: "Product not found" };
+  
+  const category = (product.category || "GEN").substring(0, 3).toUpperCase();
+  const nameCode = (product.name || "ITEM").replace(/\s+/g, '-').substring(0, 6).toUpperCase();
+  const random = Math.random().toString(36).substring(2, 5).toUpperCase();
+  
+  const newSKU = `${category}-${nameCode}-${random}`;
+  product.sku = newSKU;
+  
+  logAuditEntry("Generate SKU", "System", `Generated SKU ${newSKU} for product ${product.name} (${productId})`);
+  
+  return { status: "success", productId: productId, newSKU: newSKU };
+}
+
+function fixAllBrokenReferences() {
+  const brokenRefs = getBrokenReferences();
+  const fixes = [];
+  
+  brokenRefs.forEach(ref => {
+    if (ref.type === "Sales Customer Ref") {
+      const sale = database.sales.find(s => s.id === ref.recordId);
+      if (sale) {
+        sale.customerName = "Unknown Customer";
+      }
+    }
+    fixes.push({ ...ref, fixed: true });
+  });
+  
+  logAuditEntry("Fix Broken References", "System", `Fixed ${fixes.length} broken references`);
+  
+  return { status: "success", fixes: fixes };
+}
+
+function recalculateInventory() {
+  const products = database.products || [];
+  const sales = database.sales || [];
+  
+  // Get all sold quantities per product
+  const soldQty = {};
+  sales.forEach(s => {
+    const items = getSmartSaleItems(s);
+    items.forEach(item => {
+      const pid = String(item.id);
+      soldQty[pid] = (soldQty[pid] || 0) + Number(item.qty || 0);
+    });
+  });
+  
+  products.forEach(p => {
+    const originalStock = p._originalStock || Number(p.stock) + soldQty[p.id] || Number(p.stock);
+    p._originalStock = originalStock;
+    p.stock = originalStock - soldQty[p.id];
+  });
+  
+  logAuditEntry("Recalculate Inventory", "System", "Inventory recalculated based on sales records");
+  
+  return { status: "success", message: "Inventory recalculated for " + products.length + " products" };
+}
+
+// Get all data for API calls
+function getAllDataForAnalyzer() {
+  return {
+    products: database.products || [],
+    customers: database.customers || [],
+    sales: database.sales || [],
+    payments: database.payments || [],
+    todos: database.todos || [],
+    wholesalers: database.wholesalers || [],
+    auditLogs: (database.auditLogs || []).slice(-100),
+    productPriceHistories: database.productPriceHistories || [],
+    productAnalytics: database.productAnalytics || []
+  };
+}

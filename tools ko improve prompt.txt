@@ -1,0 +1,22 @@
+myri website men aik tools ka section ha 
+us men ya advanced special tools hen 
+abhi "Data Tools & Diagnostics Identify data discrepancies, clean duplicate products safely and verify inventory records. 
+aur Duplicate Products Cleaner, Scan database for products sharing the same name (case-insensitive). 
+Scan Duplicates Database Health Check Scan for NaN prices/stocks, negative customer balances, or negative credit limits. 
+Run Diagnostics Inventory Recalculator Verify starting stock counts against sales records client-side to find calculations mismatch. 
+Download a full system csv backup file. 
+Download JSON/csv Backup Upload & Restore Backup" 
+aap myra database google spreadsheet ka structure bhi dakh lo ta k tools / functions ko improve krnen men help ho 
+aur is k bad men just next tool ka name dun ga aap mjy improve kr dyna isi myry google sheet database k mtabik 
+"aik products name ki sheet us men ya headers hen [id name category price cost stock minStock barcode sku unit imageUrl supplier expiryDate createdAt updatedAt], 
+aik Todos name ki sheet ha us men ya column headers hen [id title frequency priority lastCompletedDate nextDueDate status active createdAt updatedAt], 
+aik wholsalers name ki sheet ha us men ya headers hen [id name type contactPerson phone address active createdAt updatedAt], 
+aik audit logs name ki sheet ha us men y aheaders hen [timestamp action operator details], 
+aik customers name ki sheet ha us emny aheaders hen [id name phone creditLimit balance active address city totalPurchases lastPurchaseDate createdAt updatedAt], 
+aik sales name ki sheet ha us emny aheaders hen [id date customerId customerName items subtotal discount total paymentMethod paymentStatus profit tax paidAmount remainingAmount status], 
+aik payments name ki sheet ha us emn ya headers hen [id date customerId amount method notes invoiceId paymentType balanceAfter] " 
+now mjy is tool ko special tool / function bnana chata hun aap mjy improve kr do 
+as a expert tool function developer 
+jo myra workload km kren 
+myra goal workload kam karna, human mistakes reduce karna aur decision-making improve karna hai first tool name :
+ 1. Low Stock Alert Center Automatically Products.stock <= minStock walay products ki list banaye. Benefit: Stock khatam hone se pehle reorder kar sakte hain.
