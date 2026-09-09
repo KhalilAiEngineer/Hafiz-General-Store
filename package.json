@@ -3,18 +3,15 @@
   "version": "17.0.0",
   "description": "Hafiz General Store - POS & Inventory Management System",
   "private": true,
-  "scripts": {
-    "dev": "npx serve public",
-    "build": "echo 'Static site - no build needed'",
-    "start": "npx serve public"
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
   },
-  "keywords": [
-    "pos",
-    "inventory",
-    "store",
-    "management",
-    "blogger"
-  ],
-  "author": "Khalil Ai Engineer",
-  "license": "MIT"
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "echo 'No build needed'",
+    "start": "vercel dev"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }

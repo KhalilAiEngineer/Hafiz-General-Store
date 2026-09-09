@@ -4529,14 +4529,8 @@ VIBE CODERS KEYWORDS & SECTION MAP:
     // Jab aap Cloud API deploy karein, to naya Sync URL yahan paste karein.
     // ==========================================================================
     function getCloudApiUrl() {
-      const parts = [
-        "https://script",
-        "google",
-        "com/macros/s/",
-        "AKfycby5e_Iih-kUa_q6MjGbvYJ443g_CKvXD7_D7HeyUPXlB452lJ1WB51tW3q9uchT-TqsEg",
-        "/exec"
-      ];
-      return `${parts[0]}.${parts[1]}.${parts[2]}${parts[3]}${parts[4]}`;
+      // Vercel backend API endpoint
+      return window.location.origin + '/api';
     }
 
     const CLOUD_API_URL = getCloudApiUrl();
@@ -4974,7 +4968,7 @@ database = cloudData;
           method: 'POST',
           mode: 'cors',
           headers: {
-            'Content-Type': 'text/plain' // Crucial to prevent Preflight OPTIONS request CORS block
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify(body)
         });
