@@ -3085,7 +3085,7 @@ VIBE CODERS KEYWORDS & SECTION MAP:
                      <i data-lucide="database" style="width: 16px; height: 16px; color: var(--primary);"></i>
                      🔒 Database Control Center
                    </h4>
-                   <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">Central monitoring and maintenance hub for Google Sheets backend. View data, audit issues, diagnose problems, and auto-fix common errors.</p>
+                    <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">Central monitoring and maintenance hub for cloud database. View data, audit issues, diagnose problems, and auto-fix common errors.</p>
                    <button type="button" class="btn btn-primary btn-sm" onclick="openDatabaseControlCenter(true)" style="width: 100%; justify-content: center;">Open Control Center</button>
                    <div id="databaseControlCenterResult" style="margin-top: 12px; max-height: 250px; overflow-y: auto; display: none;"></div>
                  </div>
@@ -5046,8 +5046,15 @@ database = cloudData;
         const res = await response.json();
         if (res && res.status === "success") {
           database = res.data;
+          database.products = database.products || [];
+          database.customers = database.customers || [];
+          database.sales = database.sales || [];
+          database.payments = database.payments || [];
           database.wholesalers = database.wholesalers || [];
           database.todos = database.todos || [];
+          database.auditLogs = database.auditLogs || [];
+          database.productPriceHistories = database.productPriceHistories || [];
+          database.productAnalytics = database.productAnalytics || [];
           checkDatabaseAlerts();
           saveLocalData();
           setAppState('idle');
@@ -5211,7 +5218,7 @@ database = cloudData;
       const todayTransactionsVal = (database.sales || [])
         .filter(sale => sale.date && sale.date.startsWith(today)).length;
 
-      const totalCustomersCount = validCustomers.filter(c => c.active !== false && c.active !== "FALSE").length;
+      const totalCustomersCount = validCustomers.filter(c => c.active !== false && c.active !== "FALSE" && c.active !== 0 && c.active !== "0" && c.active !== 0 && c.active !== "0").length;
       
       const totalInventoryValRetail = validProducts
         .reduce((sum, prod) => sum + (Number(prod.price || 0) * Number(prod.stock || 0)), 0);
@@ -7086,7 +7093,7 @@ database = cloudData;
         });
 
       } else if (activeChartTab === 'debts') {
-        const validCustomers = (database.customers || []).filter(c => Number(c.balance || 0) > 0 && c.active !== false && c.active !== "FALSE");
+        const validCustomers = (database.customers || []).filter(c => Number(c.balance || 0) > 0 && c.active !== false && c.active !== "FALSE" && c.active !== 0 && c.active !== "0");
         const sortedCustomers = [...validCustomers].sort((a, b) => Number(b.balance) - Number(a.balance));
         
         const top5 = sortedCustomers.slice(0, 5);
@@ -7640,7 +7647,7 @@ database = cloudData;
 
       const validCustomers = (database.customers || []).filter(c => c && c.id && c.id.trim() !== '');
       const matches = validCustomers.filter(c => {
-        const isActive = c.active !== false && c.active !== "FALSE";
+        const isActive = c.active !== false && c.active !== "FALSE" && c.active !== 0 && c.active !== "0";
         const phoneStr = String(c.phone || '');
         const matchesSearch = (c.name || '').toLowerCase().includes(val) || phoneStr.includes(val);
         return isActive && matchesSearch;
@@ -7768,7 +7775,7 @@ database = cloudData;
         }
 
         // Check if customer is inactive
-        if (customerObj.active === false || customerObj.active === "FALSE") {
+        if (customerObj.active === false || customerObj.active === "FALSE" || customerObj.active === 0 || customerObj.active === "0") {
           showToast("Customer account band hai (inactive)!", "danger");
           resetCheckoutButton();
           return;
@@ -8678,7 +8685,7 @@ database = cloudData;
       const custDuplicates = getDuplicateIds(validCustomers);
 
       const filtered = validCustomers.filter(c => {
-        const isActive = c.active !== false && c.active !== "FALSE";
+        const isActive = c.active !== false && c.active !== "FALSE" && c.active !== 0 && c.active !== "0";
         const matchesStatus = statusFilter === 'all' || 
                               (statusFilter === 'active' && isActive) || 
                               (statusFilter === 'inactive' && !isActive);
@@ -8696,7 +8703,7 @@ database = cloudData;
       filtered.forEach(c => {
         const tr = document.createElement('tr');
         const limitReached = Number(c.balance || 0) >= Number(c.creditLimit || 0);
-        const isActive = c.active !== false && c.active !== "FALSE";
+        const isActive = c.active !== false && c.active !== "FALSE" && c.active !== 0 && c.active !== "0";
         const isDuplicate = custDuplicates.includes(c.id);
 
         if (isDuplicate) {
@@ -9319,7 +9326,7 @@ database = cloudData;
 
       try {
         const res = await apiCall("refundSale", { id: id });
-        if (res.status !== 'success') throw new Error(res.message || "Failed to update Sheets.");
+        if (res.status !== 'success') throw new Error(res.message || "Failed to update database.");
 
         // Update local memory state after success
         sale.status = 'refunded';
@@ -9358,7 +9365,7 @@ database = cloudData;
       const activeWholesalers = (database.wholesalers || []).filter(w => w && w.id && w.id.trim() !== '');
 
       activeWholesalers.forEach(w => {
-        const isActive = w.active !== false && w.active !== "FALSE";
+        const isActive = w.active !== false && w.active !== "FALSE" && w.active !== 0 && w.active !== "0";
         if (isActive) {
           const opt = document.createElement('option');
           opt.value = w.name;
@@ -9405,9 +9412,9 @@ database = cloudData;
       const validWholesalers = (database.wholesalers || []).filter(w => w && w.id && w.id.trim() !== '');
 
       const totalCount = validWholesalers.filter(w => (w.type || 'Supplier') === 'Supplier').length;
-      const activeCount = validWholesalers.filter(w => (w.type || 'Supplier') === 'Supplier' && w.active !== false && w.active !== "FALSE").length;
+      const activeCount = validWholesalers.filter(w => (w.type || 'Supplier') === 'Supplier' && w.active !== false && w.active !== "FALSE" && w.active !== 0 && w.active !== "0").length;
       const wholesaleCount = validWholesalers.filter(w => (w.type || 'Supplier') === 'Wholesaler').length;
-      const wholesaleActiveCount = validWholesalers.filter(w => (w.type || 'Supplier') === 'Wholesaler' && w.active !== false && w.active !== "FALSE").length;
+      const wholesaleActiveCount = validWholesalers.filter(w => (w.type || 'Supplier') === 'Wholesaler' && w.active !== false && w.active !== "FALSE" && w.active !== 0 && w.active !== "0").length;
 
       const totalCountEl = document.getElementById('wholesalerTotalCount');
       if (totalCountEl) totalCountEl.innerText = totalCount;
@@ -9419,7 +9426,7 @@ database = cloudData;
       if (wholesaleActiveCountEl) wholesaleActiveCountEl.innerText = wholesaleActiveCount;
 
       const filtered = validWholesalers.filter(w => {
-        const isActive = w.active !== false && w.active !== "FALSE";
+        const isActive = w.active !== false && w.active !== "FALSE" && w.active !== 0 && w.active !== "0";
         const type = w.type || 'Supplier';
         const matchesStatus = statusFilter === 'all' || 
                               (statusFilter === 'active' && isActive) || 
@@ -9438,7 +9445,7 @@ database = cloudData;
 
       filtered.forEach(w => {
         const tr = document.createElement('tr');
-        const isActive = w.active !== false && w.active !== "FALSE";
+        const isActive = w.active !== false && w.active !== "FALSE" && w.active !== 0 && w.active !== "0";
         
         tr.innerHTML = `
           <td data-label="${COLUMNS.WHOLESALERS[0]}"><div style="font-weight:600; color:var(--text-main);">${w.name || ''}</div><span style="font-size:11px; color:var(--text-muted);">${w.id}</span></td>
@@ -9685,7 +9692,7 @@ database = cloudData;
     }
 
     function isTaskVisible(todo, windowDays) {
-      if (todo.active === false || todo.active === 'false') return false;
+      if (todo.active === false || todo.active === 'false' || todo.active === 0 || todo.active === '0') return false;
       if (todo.status === 'completed' && todo.frequency === 'onetime') return false;
       const today = new Date(); today.setHours(0, 0, 0, 0);
       if (!todo.nextDueDate) return false;
@@ -9753,7 +9760,7 @@ database = cloudData;
       // Check for duplicate
       const dup = (database.todos || []).find(x =>
         x.title.toLowerCase().trim() === todo.title.toLowerCase().trim() &&
-        x.active !== false && x.active !== 'false'
+        x.active !== false && x.active !== 'false' && x.active !== 0 && x.active !== '0'
       );
       if (dup) { showToast('This task already exists!', 'danger'); return; }
 
@@ -9779,7 +9786,7 @@ database = cloudData;
         };
         const dup = (database.todos || []).find(x =>
           x.title.toLowerCase().trim() === todo.title.toLowerCase().trim() &&
-          x.active !== false && x.active !== 'false'
+          x.active !== false && x.active !== 'false' && x.active !== 0 && x.active !== '0'
         );
         if (!dup) {
           await persistTodo(todo, true);
@@ -9791,7 +9798,7 @@ database = cloudData;
 
     async function archiveTemplateTasks() {
       const templateTitles = new Set(TODO_TEMPLATES.map(t => t.title.toLowerCase().trim()));
-      const tasks = (database.todos || []).filter(t => templateTitles.has(String(t.title || '').toLowerCase().trim()) && t.active !== false && t.active !== 'false');
+      const tasks = (database.todos || []).filter(t => templateTitles.has(String(t.title || '').toLowerCase().trim()) && t.active !== false && t.active !== 'false' && t.active !== 0 && t.active !== '0');
       if (tasks.length === 0) {
         showToast('Template tasks already clear hain.', 'info');
         return;
@@ -9818,7 +9825,7 @@ database = cloudData;
 
       const existingTodos = (database.todos || []).filter(t => {
         const title = String(t.title || '').toLowerCase().trim();
-        return title === 'restock required' && t.active !== false && t.active !== 'false';
+        return title === 'restock required' && t.active !== false && t.active !== 'false' && t.active !== 0 && t.active !== '0';
       });
 
       const todo = {
@@ -9899,7 +9906,7 @@ database = cloudData;
 
     function renderTodoStats() {
       const todos = database.todos || [];
-      const active = todos.filter(t => t.active !== false && t.active !== 'false');
+      const active = todos.filter(t => t.active !== false && t.active !== 'false' && t.active !== 0 && t.active !== '0');
 
       let dueToday = 0, overdue = 0, completed = 0;
       active.forEach(t => {
@@ -9932,7 +9939,7 @@ database = cloudData;
       const priorityFilter = document.getElementById('todoPriorityFilter')?.value || 'all';
 
       let todos = (database.todos || []).filter(t => {
-        const isActive = t.active !== false && t.active !== 'false';
+        const isActive = t.active !== false && t.active !== 'false' && t.active !== 0 && t.active !== '0';
         if (statusFilter === 'active' && !isActive) return false;
         if (statusFilter === 'archived' && isActive) return false;
         if (freqFilter !== 'all' && t.frequency !== freqFilter) return false;
@@ -9958,7 +9965,7 @@ database = cloudData;
       tbody.innerHTML = todos.map(t => {
         const status = getTaskStatus(t);
         const color = getPriorityColor(t.priority);
-        const isActive = t.active !== false && t.active !== 'false';
+        const isActive = t.active !== false && t.active !== 'false' && t.active !== 0 && t.active !== '0';
         const dueStr = t.nextDueDate ? parseLocalDate(t.nextDueDate).toLocaleDateString('en-PK', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
         const statusBadge = {
           overdue:   '<span class="badge badge-danger">⚠ Overdue</span>',
@@ -10042,7 +10049,7 @@ database = cloudData;
       const dup = (database.todos || []).find(t =>
         t.id !== id &&
         t.title.toLowerCase().trim() === title.toLowerCase() &&
-        t.active !== false && t.active !== 'false'
+        t.active !== false && t.active !== 'false' && t.active !== 0 && t.active !== '0'
       );
       if (dup) { showToast("Is naam ka task pehle se mojood hai!", "danger"); return; }
 
@@ -15246,7 +15253,7 @@ Generated: ${new Date().toLocaleString('en-PK')}
       return {
         systemHealth: {
           status: healthStatus,
-          totalSheets: 6,
+          totalTables: 9,
           totalRecords: totalRecords,
           lastSyncTime: new Date().toISOString(),
           averageResponseTime: "120ms"
